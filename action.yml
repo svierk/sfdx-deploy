@@ -1,5 +1,5 @@
 name: SFDX Deploy
-description: Composite action for deploying Salesforce metadata to a target org, with optional delta (sfdx-git-delta) and validation-only (dry-run) runs.
+description: GitHub composite action for deploying Salesforce metadata to a target org.
 
 branding:
   icon: upload
