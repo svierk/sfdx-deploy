@@ -1,0 +1,215 @@
+name: SFDX Deploy
+description: Composite action for deploying Salesforce metadata to a target org, with optional delta (sfdx-git-delta) and validation-only (dry-run) runs.
+
+branding:
+  icon: upload
+  color: blue
+
+inputs:
+  source-dir:
+    description: Comma-separated list of source directories to deploy, e.g. "force-app,my-other-app".
+    required: false
+  manifest:
+    description: Path to a manifest (package.xml) file that specifies the components to deploy.
+    required: false
+  metadata:
+    description: Comma-separated list of metadata component names to deploy, e.g. "ApexClass,CustomObject:Account".
+    required: false
+  delta:
+    description: >
+      Deploy only the components that changed between two git refs, using the sfdx-git-delta plugin.
+      When enabled, the generated delta manifest takes precedence over the source-dir, manifest and metadata inputs.
+      Requires the repository to be checked out with full git history (fetch-depth: 0).
+    required: false
+    default: 'false'
+  delta-from:
+    description: Git ref to compare from when delta is enabled, e.g. a base branch or commit SHA like "origin/main".
+    required: false
+  delta-to:
+    description: Git ref to compare to when delta is enabled.
+    required: false
+    default: HEAD
+  target-org:
+    description: Username or alias of the target org. Not required if the default org is already set.
+    required: false
+  test-level:
+    description: >
+      Deployment Apex test level. Permissible values are:
+      NoTestRun, RunSpecifiedTests, RunLocalTests, RunAllTestsInOrg.
+      Ignored when the "tests" input is provided (the CLI then runs the specified tests).
+    required: false
+  tests:
+    description: Comma-separated list of Apex tests to run, used with the RunSpecifiedTests test level.
+    required: false
+  dry-run:
+    description: Validate the deployment without saving the components to the org (check-only deployment).
+    required: false
+    default: 'false'
+  ignore-conflicts:
+    description: Ignore conflicts and deploy local files, even if they overwrite changes in the org.
+    required: false
+    default: 'false'
+  ignore-warnings:
+    description: Ignore warnings and allow the deployment to complete successfully.
+    required: false
+    default: 'false'
+  wait:
+    description: Number of minutes to wait for the deployment to complete.
+    required: false
+    default: '33'
+  api-version:
+    description: Override the api version used for api requests made by this action, for example '59.0'.
+    required: false
+  step-summary:
+    description: Write a result section to the GitHub Actions job summary. Set to false to avoid collisions with a custom workflow summary.
+    required: false
+    default: 'true'
+
+outputs:
+  deploy-id:
+    description: ID of the deployment job.
+    value: ${{ steps.deploy.outputs.deploy-id }}
+  status:
+    description: Final status of the deployment, e.g. "Succeeded" or "Failed".
+    value: ${{ steps.deploy.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy Metadata
+      id: deploy
+      shell: bash
+      env:
+        SOURCE_DIR: ${{ inputs.source-dir }}
+        MANIFEST: ${{ inputs.manifest }}
+        METADATA: ${{ inputs.metadata }}
+        DELTA: ${{ inputs.delta }}
+        DELTA_FROM: ${{ inputs.delta-from }}
+        DELTA_TO: ${{ inputs.delta-to }}
+        TARGET_ORG: ${{ inputs.target-org }}
+        TEST_LEVEL: ${{ inputs.test-level }}
+        TESTS: ${{ inputs.tests }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        IGNORE_CONFLICTS: ${{ inputs.ignore-conflicts }}
+        IGNORE_WARNINGS: ${{ inputs.ignore-warnings }}
+        WAIT: ${{ inputs.wait }}
+        API_VERSION: ${{ inputs.api-version }}
+        STEP_SUMMARY: ${{ inputs.step-summary }}
+      run: |
+        set -euo pipefail
+
+        args=()
+
+        # Append a flag once per comma-separated value (trimmed).
+        add_multi() {
+          local flag="$1" values="$2" item
+          IFS=',' read -ra items <<< "$values"
+          for item in "${items[@]}"; do
+            item="$(echo "$item" | xargs)"
+            [[ -n "$item" ]] && args+=("$flag" "$item")
+          done
+        }
+
+        if [[ "$DELTA" == "true" ]]; then
+          echo "Delta mode enabled — generating manifest from git diff..."
+
+          if [[ -z "$DELTA_FROM" ]]; then
+            echo "::error::Delta mode requires the 'delta-from' input (a git ref to diff against)."
+            exit 1
+          fi
+
+          # Ensure the sfdx-git-delta plugin is available.
+          if ! sf plugins | grep -q 'sfdx-git-delta'; then
+            echo "Installing sfdx-git-delta plugin..."
+            echo y | sf plugins install sfdx-git-delta
+          fi
+
+          delta_dir="changed-sources"
+          rm -rf "$delta_dir"
+          mkdir -p "$delta_dir"
+          sf sgd source delta --from "$DELTA_FROM" --to "$DELTA_TO" --output-dir "$delta_dir" --generate-delta
+
+          manifest="$delta_dir/package/package.xml"
+          destructive="$delta_dir/destructiveChanges/destructiveChanges.xml"
+
+          additive=false
+          destructive_present=false
+          [[ -f "$manifest" ]] && grep -q '<types>' "$manifest" && additive=true
+          [[ -f "$destructive" ]] && grep -q '<types>' "$destructive" && destructive_present=true
+
+          if [[ "$additive" == "false" && "$destructive_present" == "false" ]]; then
+            echo "ℹ️ No deployable changes detected in the delta — skipping deployment."
+            {
+              echo "deploy-id="
+              echo "status=Nothing to deploy"
+            } >> "$GITHUB_OUTPUT"
+            if [[ "$STEP_SUMMARY" == "true" ]]; then
+              {
+                echo ""
+                echo "### 🚀 Deployment skipped"
+                echo ""
+                echo "- **Status:** Nothing to deploy (no changes in the delta)"
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+
+          args+=(--manifest "$manifest")
+          [[ "$destructive_present" == "true" ]] && args+=(--post-destructive-changes "$destructive")
+        else
+          [[ -n "$SOURCE_DIR" ]] && add_multi --source-dir "$SOURCE_DIR"
+          [[ -n "$METADATA" ]] && add_multi --metadata "$METADATA"
+          [[ -n "$MANIFEST" ]] && args+=(--manifest "$MANIFEST")
+        fi
+
+        if [[ -n "$TESTS" ]]; then
+          add_multi --tests "$TESTS"
+        elif [[ -n "$TEST_LEVEL" ]]; then
+          args+=(--test-level "$TEST_LEVEL")
+        fi
+
+        [[ -n "$TARGET_ORG" ]] && args+=(--target-org "$TARGET_ORG")
+        [[ -n "$API_VERSION" ]] && args+=(--api-version "$API_VERSION")
+        [[ -n "$WAIT" ]] && args+=(--wait "$WAIT")
+        [[ "$DRY_RUN" == "true" ]] && args+=(--dry-run)
+        [[ "$IGNORE_CONFLICTS" == "true" ]] && args+=(--ignore-conflicts)
+        [[ "$IGNORE_WARNINGS" == "true" ]] && args+=(--ignore-warnings)
+
+        # Capture the result even on failure so the JSON and outputs are still
+        # available, then propagate the CLI exit code to fail the step.
+        set +e
+        result=$(sf project deploy start --json "${args[@]}")
+        exit_code=$?
+        set -e
+
+        echo "$result" | jq '.'
+
+        deploy_id=$(echo "$result" | jq -r '.result.id // empty')
+        status=$(echo "$result" | jq -r '.result.status // empty')
+
+        {
+          echo "deploy-id=$deploy_id"
+          echo "status=$status"
+        } >> "$GITHUB_OUTPUT"
+
+        if [[ "$exit_code" -eq 0 ]]; then
+          echo "✅ Deployment ${status:-completed}${deploy_id:+ (ID: $deploy_id)}"
+        else
+          echo "❌ Deployment failed${deploy_id:+ (ID: $deploy_id)}"
+        fi
+
+        if [[ "$STEP_SUMMARY" == "true" ]]; then
+          {
+            echo ""
+            echo "### 🚀 Deployment ${status:-result}"
+            echo ""
+            echo "- **Status:** ${status:-unknown}"
+            if [[ -n "$deploy_id" ]]; then
+              echo "- **Deploy ID:** \`$deploy_id\`"
+            fi
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        exit $exit_code
