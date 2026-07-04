@@ -99,6 +99,8 @@ Delta mode uses [sfdx-git-delta](https://github.com/scolladon/sfdx-git-delta) to
 
 The step fails if the deployment fails, while still printing the deployment result and setting the outputs.
 
+The action prints a concise, human-readable table of the affected components (created, changed and deleted) to the log and folds the full JSON result into a collapsible group. When `step-summary` is enabled, the job summary additionally lists the deployed, modified and deleted metadata — including deletions applied via destructive changes — plus a failures table when the deployment did not succeed.
+
 ## References
 
 The deployment option supported by this GitHub composite action can be found in the Salesforce CLI Command Reference here:
