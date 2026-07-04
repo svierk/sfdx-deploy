@@ -201,25 +201,32 @@ runs:
           echo "status=$status"
         } >> "$GITHUB_OUTPUT"
 
+        # Collapse the per-file entries into one row per component. The CLI
+        # reports a component once per source file (an LWC as .js/.html/.js-meta.xml,
+        # an Apex class as .cls/.cls-meta.xml, ...), so dedupe by type + name +
+        # state to list and count each component only once.
+        components=$(echo "$result" | jq -c '
+          [.result.files[]? | {state: (.state // "—"), type: (.type // "—"), fullName: (.fullName // "—")}]
+          | unique')
+
         # Component counts by state (deletions come from destructive changes).
-        created=$(echo "$result" | jq '[.result.files[]? | select(.state == "Created")] | length')
-        changed=$(echo "$result" | jq '[.result.files[]? | select(.state == "Changed")] | length')
-        deleted=$(echo "$result" | jq '[.result.files[]? | select(.state == "Deleted")] | length')
-        failed=$(echo  "$result" | jq '[.result.files[]? | select(.state == "Failed")]  | length')
+        created=$(echo "$components" | jq '[.[] | select(.state == "Created")] | length')
+        changed=$(echo "$components" | jq '[.[] | select(.state == "Changed")] | length')
+        deleted=$(echo "$components" | jq '[.[] | select(.state == "Deleted")] | length')
+        failed=$(echo  "$components" | jq '[.[] | select(.state == "Failed")]  | length')
 
         failed_note=""
         [[ "${failed:-0}" -gt 0 ]] && failed_note=" · ❌ ${failed} failed"
         counts="🟢 ${created} created · 🟡 ${changed} changed · 🔴 ${deleted} deleted${failed_note}"
 
         # Emit the changed/deleted/failed components as markdown table rows,
-        # skipping unchanged ones. Reads $result from the surrounding scope.
+        # skipping unchanged ones. Reads $components from the surrounding scope.
         component_rows() {
-          echo "$result" | jq -r '
-            (.result.files // [])
-            | map(select((.state // "") != "Unchanged"))
+          echo "$components" | jq -r '
+            map(select(.state != "Unchanged"))
             | sort_by(.state, .type, .fullName)
             | .[]
-            | "| \({Created:"🟢 Created", Changed:"🟡 Changed", Deleted:"🔴 Deleted", Failed:"❌ Failed"}[.state] // (.state // "—")) | \(.type // "—") | `\(.fullName // "—")` |"
+            | "| \({Created:"🟢 Created", Changed:"🟡 Changed", Deleted:"🔴 Deleted", Failed:"❌ Failed"}[.state] // .state) | \(.type) | `\(.fullName)` |"
           '
         }
 
@@ -232,9 +239,8 @@ runs:
           echo "❌ ${noun} failed${deploy_id:+ (ID: $deploy_id)} — ${counts}"
         fi
 
-        comp_tsv=$(echo "$result" | jq -r '
-          (.result.files // [])
-          | map(select((.state // "") != "Unchanged"))
+        comp_tsv=$(echo "$components" | jq -r '
+          map(select(.state != "Unchanged"))
           | sort_by(.state, .type, .fullName)
           | .[] | [.state, .type, .fullName] | @tsv')
         if [[ -n "$comp_tsv" ]]; then
@@ -282,8 +288,10 @@ runs:
               echo "| Type | Name | Problem |"
               echo "| ---- | ---- | ------- |"
               echo "$result" | jq -r '
-                .result.files[]? | select(.state == "Failed")
-                | "| \(.type // "—") | `\(.fullName // "—")` | \((.error // .problemType // "—") | gsub("\n"; " ")) |"'
+                [.result.files[]? | select(.state == "Failed")
+                 | {type: (.type // "—"), fullName: (.fullName // "—"), problem: ((.error // .problemType // "—") | gsub("\n"; " "))}]
+                | unique[]
+                | "| \(.type) | `\(.fullName)` | \(.problem) |"'
               echo ""
             fi
           } >> "$GITHUB_STEP_SUMMARY"
