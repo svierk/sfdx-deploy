@@ -15,6 +15,15 @@ inputs:
   metadata:
     description: Comma-separated list of metadata component names to deploy, e.g. "ApexClass,CustomObject:Account".
     required: false
+  destructive-changes:
+    description: >
+      Automatically detect metadata deleted in the repository (via sfdx-git-delta) and apply those
+      deletions to the target org AFTER the deployment (post-destructive changes). Works for normal
+      full deployments as well as delta mode. The deletions are derived from the git range defined by
+      "delta-from" and "delta-to", so full git history is required (fetch-depth: 0). Set to false to
+      deploy additively only.
+    required: false
+    default: 'true'
   delta:
     description: >
       Deploy only the components that changed between two git refs, using the sfdx-git-delta plugin.
@@ -23,10 +32,12 @@ inputs:
     required: false
     default: 'false'
   delta-from:
-    description: Git ref to compare from when delta is enabled, e.g. a base branch or commit SHA like "origin/main".
+    description: >
+      Git ref to compare from when detecting changes/deletions, e.g. a base branch or commit SHA like "origin/main".
+      Required in delta mode. For destructive changes on full deployments it defaults to the previous commit ("HEAD~1").
     required: false
   delta-to:
-    description: Git ref to compare to when delta is enabled.
+    description: Git ref to compare to when detecting changes/deletions.
     required: false
     default: HEAD
   target-org:
@@ -83,6 +94,7 @@ runs:
         SOURCE_DIR: ${{ inputs.source-dir }}
         MANIFEST: ${{ inputs.manifest }}
         METADATA: ${{ inputs.metadata }}
+        DESTRUCTIVE_CHANGES: ${{ inputs.destructive-changes }}
         DELTA: ${{ inputs.delta }}
         DELTA_FROM: ${{ inputs.delta-from }}
         DELTA_TO: ${{ inputs.delta-to }}
@@ -120,6 +132,38 @@ runs:
           done
         }
 
+        # Make sure the sfdx-git-delta plugin is available (used to derive both
+        # delta manifests and automatic destructive changes from the git diff).
+        ensure_sgd() {
+          if ! sf plugins | grep -q 'sfdx-git-delta'; then
+            echo "Installing sfdx-git-delta plugin..."
+            echo y | sf plugins install sfdx-git-delta
+          fi
+        }
+
+        # A shallow clone is the most common reason changes (including deletions)
+        # are missed: sfdx-git-delta needs the full history to diff.
+        warn_if_shallow() {
+          if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
+            echo "::warning::The repository is a shallow clone — sfdx-git-delta may miss changes, including metadata deletions. Check out with 'fetch-depth: 0'."
+          fi
+        }
+
+        # Generate an sfdx-git-delta output set into changed-sources/ for a range.
+        # $3 may be "--generate-delta" to also copy the changed source files.
+        generate_delta() {
+          rm -rf changed-sources
+          mkdir -p changed-sources
+          sf sgd source delta --from "$1" --to "$2" --output-dir changed-sources ${3:-}
+        }
+
+        # True when a generated destructiveChanges.xml actually lists components.
+        has_destructions() {
+          [[ -f "$1" ]] && grep -q '<types>' "$1"
+        }
+
+        destructive=""
+
         if [[ "$DELTA" == "true" ]]; then
           echo "Delta mode enabled — generating manifest from git diff..."
 
@@ -128,26 +172,18 @@ runs:
             exit 1
           fi
 
-          # Ensure the sfdx-git-delta plugin is available.
-          if ! sf plugins | grep -q 'sfdx-git-delta'; then
-            echo "Installing sfdx-git-delta plugin..."
-            echo y | sf plugins install sfdx-git-delta
-          fi
+          warn_if_shallow
+          ensure_sgd
+          generate_delta "$DELTA_FROM" "$DELTA_TO" --generate-delta
 
-          delta_dir="changed-sources"
-          rm -rf "$delta_dir"
-          mkdir -p "$delta_dir"
-          sf sgd source delta --from "$DELTA_FROM" --to "$DELTA_TO" --output-dir "$delta_dir" --generate-delta
-
-          manifest="$delta_dir/package/package.xml"
-          destructive="$delta_dir/destructiveChanges/destructiveChanges.xml"
+          manifest="changed-sources/package/package.xml"
+          candidate="changed-sources/destructiveChanges/destructiveChanges.xml"
 
           additive=false
-          destructive_present=false
-          [[ -f "$manifest" ]] && grep -q '<types>' "$manifest" && additive=true
-          [[ -f "$destructive" ]] && grep -q '<types>' "$destructive" && destructive_present=true
+          has_destructions "$manifest" && additive=true
+          [[ "$DESTRUCTIVE_CHANGES" == "true" ]] && has_destructions "$candidate" && destructive="$candidate"
 
-          if [[ "$additive" == "false" && "$destructive_present" == "false" ]]; then
+          if [[ "$additive" == "false" && -z "$destructive" ]]; then
             echo "ℹ️ No deployable changes detected in the delta — skipping."
             {
               echo "deploy-id="
@@ -166,12 +202,64 @@ runs:
           fi
 
           args+=(--manifest "$manifest")
-          [[ "$destructive_present" == "true" ]] && args+=(--post-destructive-changes "$destructive")
         else
-          [[ -n "$SOURCE_DIR" ]] && add_multi --source-dir "$SOURCE_DIR"
-          [[ -n "$METADATA" ]] && add_multi --metadata "$METADATA"
-          [[ -n "$MANIFEST" ]] && args+=(--manifest "$MANIFEST")
+          # For a normal full deployment, optionally derive metadata deletions
+          # from the git diff and apply them after the deploy. Salesforce's
+          # --post-destructive-changes must be paired with --manifest and can't
+          # be combined with --source-dir/--metadata, so when deletions exist we
+          # deploy via a generated manifest to keep it a single, atomic deploy.
+          if [[ "$DESTRUCTIVE_CHANGES" == "true" ]]; then
+            from="${DELTA_FROM:-HEAD~1}"
+            to="${DELTA_TO:-HEAD}"
+            warn_if_shallow
+            if git rev-parse --verify --quiet "$from" >/dev/null && git rev-parse --verify --quiet "$to" >/dev/null; then
+              ensure_sgd
+              echo "Detecting deleted metadata between '$from' and '$to'..."
+              generate_delta "$from" "$to"
+              candidate="changed-sources/destructiveChanges/destructiveChanges.xml"
+              has_destructions "$candidate" && destructive="$candidate"
+            else
+              echo "::warning::Cannot resolve git range '${from}'..'${to}' to detect deletions — deploying additively. Provide 'delta-from' and check out with fetch-depth: 0."
+            fi
+          fi
+
+          if [[ -n "$destructive" ]]; then
+            echo "🗑️  Metadata deletions detected — they will be applied after the deployment."
+            if [[ -n "$MANIFEST" ]]; then
+              args+=(--manifest "$MANIFEST")
+            else
+              # Build a manifest covering the configured source so it can carry
+              # the post-destructive changes in one deploy.
+              rm -rf generated-manifest
+              mkdir -p generated-manifest
+              gen=()
+              if [[ -n "$SOURCE_DIR" ]]; then
+                IFS=',' read -ra _sd <<< "$SOURCE_DIR"
+                for d in "${_sd[@]}"; do d="$(echo "$d" | xargs)"; [[ -n "$d" ]] && gen+=(--source-dir "$d"); done
+              fi
+              if [[ -n "$METADATA" ]]; then
+                IFS=',' read -ra _md <<< "$METADATA"
+                for m in "${_md[@]}"; do m="$(echo "$m" | xargs)"; [[ -n "$m" ]] && gen+=(--metadata "$m"); done
+              fi
+              # Fall back to the package directories from sfdx-project.json when
+              # no explicit source was given (same default the CLI would deploy).
+              if [[ ${#gen[@]} -eq 0 && -f sfdx-project.json ]]; then
+                while IFS= read -r p; do [[ -n "$p" ]] && gen+=(--source-dir "$p"); done < <(jq -r '.packageDirectories[]?.path // empty' sfdx-project.json)
+              fi
+              sf project generate manifest "${gen[@]}" --output-dir generated-manifest
+              manifest_path="$(ls generated-manifest/*.xml 2>/dev/null | head -n1)"
+              args+=(--manifest "$manifest_path")
+            fi
+          else
+            [[ -n "$SOURCE_DIR" ]] && add_multi --source-dir "$SOURCE_DIR"
+            [[ -n "$METADATA" ]] && add_multi --metadata "$METADATA"
+            [[ -n "$MANIFEST" ]] && args+=(--manifest "$MANIFEST")
+          fi
         fi
+
+        # Deletions are always applied after the deployment (post-destructive),
+        # for both delta and full deployments.
+        [[ -n "$destructive" ]] && args+=(--post-destructive-changes "$destructive")
 
         if [[ -n "$TESTS" ]]; then
           add_multi --tests "$TESTS"

@@ -8,6 +8,8 @@ This repository implements a simple GitHub composite action for deploying Salesf
 
 After installing the SF CLI and authorizing the relevant org, a check-only validation could look like this:
 
+> Check out with `fetch-depth: 0` so metadata deletions can be detected (see [Deleting metadata](#deleting-metadata-destructive-changes)). Set `destructive-changes: false` if you don't need this — then a shallow checkout is fine.
+
 ```yaml
 jobs:
   validation:
@@ -16,6 +18,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Install SF CLI
         uses: svierk/sfdx-cli-setup@main
@@ -38,6 +42,11 @@ jobs:
 ### Deploy metadata to an org
 
 ```yaml
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0            # required so metadata deletions can be detected
+
       - name: Deploy Metadata
         uses: svierk/sfdx-deploy@main
         with:
@@ -48,7 +57,7 @@ jobs:
 
 ### Delta deployment (only changed components)
 
-Delta mode uses [sfdx-git-delta](https://github.com/scolladon/sfdx-git-delta) to deploy only the components that changed between two git refs. This requires the full git history, so check out with `fetch-depth: 0`. The generated delta manifest takes precedence over `source-dir`, `manifest` and `metadata`, and component deletions are applied as post-destructive changes. If no deployable changes are detected, the step succeeds without deploying.
+Delta mode uses [sfdx-git-delta](https://github.com/scolladon/sfdx-git-delta) to deploy only the components that changed between two git refs. This requires the full git history, so check out with `fetch-depth: 0`. The generated delta manifest takes precedence over `source-dir`, `manifest` and `metadata`, and component deletions are applied as post-destructive changes (see [Deleting metadata](#deleting-metadata-destructive-changes)). If no deployable changes are detected, the step succeeds without deploying.
 
 ```yaml
       - name: Checkout
@@ -66,6 +75,32 @@ Delta mode uses [sfdx-git-delta](https://github.com/scolladon/sfdx-git-delta) to
           test-level: RunLocalTests
 ```
 
+### Deleting metadata (destructive changes)
+
+A plain Salesforce source deploy is **additive** — it never deletes a component from the org just because its file was removed from the repo. This action improves on that: it detects metadata you deleted in the repository (via [sfdx-git-delta](https://github.com/scolladon/sfdx-git-delta)) and applies those deletions to the target org **after** the deployment, for both delta *and* normal full deployments. This behaviour is **on by default** (`destructive-changes: true`); set it to `false` for an additive-only deploy.
+
+```yaml
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0            # required so deletions can be detected
+
+      - name: Deploy Metadata
+        uses: svierk/sfdx-deploy@main
+        with:
+          source-dir: force-app
+          target-org: target-org
+          test-level: RunLocalTests
+          # destructive-changes: true  # default — components deleted in the repo are deleted on the org
+```
+
+How it works:
+
+- Deletions are derived from the git range `delta-from`..`delta-to`. In a full deployment `delta-from` defaults to the previous commit (`HEAD~1`) and `delta-to` to `HEAD`; set `delta-from` explicitly (e.g. a base branch or release tag) to compare against a different baseline.
+- The full git history is required (`fetch-depth: 0`). On a shallow clone deletions cannot be detected and the action emits a warning instead of deleting.
+- Everything runs as a **single, atomic deploy** (one test run): when deletions exist the action deploys via a generated `package.xml` plus the derived `destructiveChanges.xml`, since Salesforce requires post-destructive changes to be paired with a manifest.
+- With `dry-run: true` the deletions are validated (check-only) but not applied.
+
 ## Inputs
 
 | Name               | Required | Default | Description                                                                                   |
@@ -73,9 +108,10 @@ Delta mode uses [sfdx-git-delta](https://github.com/scolladon/sfdx-git-delta) to
 | `source-dir`       | no       |         | Comma-separated list of source directories to deploy.                                          |
 | `manifest`         | no       |         | Path to a manifest (`package.xml`) file specifying the components to deploy.                   |
 | `metadata`         | no       |         | Comma-separated list of metadata component names, e.g. `ApexClass,CustomObject:Account`.       |
+| `destructive-changes` | no    | `true`  | Auto-detect metadata deleted in the repo (via sfdx-git-delta) and delete it on the org **after** the deploy. Works for full and delta deployments. Needs `fetch-depth: 0`. Set `false` for additive-only. |
 | `delta`            | no       | `false` | Deploy only components changed between two git refs (via sfdx-git-delta). Needs `fetch-depth: 0`. |
-| `delta-from`       | no       |         | Git ref to compare from when delta is enabled, e.g. `origin/main`.                             |
-| `delta-to`         | no       | `HEAD`  | Git ref to compare to when delta is enabled.                                                   |
+| `delta-from`       | no       |         | Git ref to compare from when detecting changes/deletions, e.g. `origin/main`. Required in delta mode; defaults to `HEAD~1` for destructive changes on full deployments. |
+| `delta-to`         | no       | `HEAD`  | Git ref to compare to when detecting changes/deletions.                                        |
 | `target-org`       | no       |         | Username or alias of the target org. Not required if the default org is set.                   |
 | `test-level`       | no       |         | `NoTestRun`, `RunSpecifiedTests`, `RunLocalTests` or `RunAllTestsInOrg`.                       |
 | `tests`            | no       |         | Comma-separated Apex tests for the `RunSpecifiedTests` level.                                  |
