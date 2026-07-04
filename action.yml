@@ -292,9 +292,18 @@ runs:
         # Collapse the per-file entries into one row per component. The CLI
         # reports a component once per source file (an LWC as .js/.html/.js-meta.xml,
         # an Apex class as .cls/.cls-meta.xml, ...), so dedupe by type + name +
-        # state to list and count each component only once.
+        # state to list and count each component only once. Deletions from
+        # post-destructive changes are not part of .result.files, so pull them
+        # from .result.details.componentSuccesses (deleted == true), where the
+        # type lives under .componentType.
         components=$(echo "$result" | jq -c '
-          [.result.files[]? | {state: (.state // "—"), type: (.type // "—"), fullName: (.fullName // "—")}]
+          [
+            (.result.files[]? | {state: (.state // "—"), type: (.type // "—"), fullName: (.fullName // "—")}),
+            (.result.details.componentSuccesses[]?
+              | select((.deleted == true) or (.deleted == "true"))
+              | select((.fullName // "") != "" and (.fullName // "") != "package.xml")
+              | {state: "Deleted", type: (.componentType // "—"), fullName: .fullName})
+          ]
           | unique')
 
         # Component counts by state (deletions come from destructive changes).
