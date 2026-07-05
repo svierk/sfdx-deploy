@@ -134,10 +134,19 @@ runs:
 
         # Make sure the sfdx-git-delta plugin is available (used to derive both
         # delta manifests and automatic destructive changes from the git diff).
+        # If a previous step already installed it, the check skips reinstalling.
+        # Installation output (unsigned-plugin prompt, npm warnings, ...) is
+        # captured and only surfaced on failure to keep the log clean.
         ensure_sgd() {
-          if ! sf plugins | grep -q 'sfdx-git-delta'; then
-            echo "Installing sfdx-git-delta plugin..."
-            echo y | sf plugins install sfdx-git-delta
+          if sf plugins | grep -q 'sfdx-git-delta'; then
+            return 0
+          fi
+          echo "Installing sfdx-git-delta plugin..."
+          local log
+          if ! log="$(echo y | sf plugins install sfdx-git-delta 2>&1)"; then
+            echo "$log"
+            echo "::error::Failed to install the sfdx-git-delta plugin."
+            return 1
           fi
         }
 
@@ -151,10 +160,17 @@ runs:
 
         # Generate an sfdx-git-delta output set into changed-sources/ for a range.
         # $3 may be "--generate-delta" to also copy the changed source files.
+        # The plugin's chatter (promo footer, progress) is captured and only
+        # shown on failure to keep the deployment log clean.
         generate_delta() {
           rm -rf changed-sources
           mkdir -p changed-sources
-          sf sgd source delta --from "$1" --to "$2" --output-dir changed-sources ${3:-}
+          local log
+          if ! log="$(sf sgd source delta --from "$1" --to "$2" --output-dir changed-sources ${3:-} 2>&1)"; then
+            echo "$log"
+            echo "::error::sfdx-git-delta failed to generate the delta between '$1' and '$2'."
+            return 1
+          fi
         }
 
         # True when a generated destructiveChanges.xml actually lists components.
