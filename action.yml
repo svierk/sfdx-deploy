@@ -363,8 +363,59 @@ runs:
           echo "ℹ️ No components created, changed or deleted."
         fi
 
-        echo "::group::Raw deployment result (JSON)"
-        echo "$result" | jq '.'
+        # Details group ("Deployment details" / "Validation details"): a
+        # human-readable breakdown of the CLI result (deployment info, component
+        # errors, test failures, coverage warnings) folded into a collapsible
+        # group instead of a raw JSON dump, so failures can be debugged without
+        # wading through the full payload.
+        echo "::group::${noun} details"
+        echo "$result" | jq -r '
+          def arr: if . == null then [] elif type == "array" then . else [.] end;
+          def yn: if . == true or . == "true" then "yes" elif . == false or . == "false" then "no" else "—" end;
+          def oneline: tostring | gsub("\n"; " ");
+          .result as $r
+          | if ($r // {}) == {} then
+              ["The CLI returned no deployment result."]
+              + (if (.name // "") != "" then ["Error:   \(.name)"] else [] end)
+              + (if (.message // "") != "" then ["Message: \(.message)"] else [] end)
+            else
+              [
+                "Deploy ID:          \($r.id // "—")",
+                "Status:             \($r.status // "—")",
+                "Check only:         \($r.checkOnly | yn)",
+                "Rollback on error:  \($r.rollbackOnError | yn)",
+                "Created by:         \($r.createdByName // "—")",
+                "Started:            \($r.createdDate // "—")",
+                "Completed:          \($r.completedDate // "—")",
+                "Components:         \($r.numberComponentsDeployed // 0)/\($r.numberComponentsTotal // 0) deployed, \($r.numberComponentErrors // 0) failed",
+                "Tests:              \($r.numberTestsCompleted // 0)/\($r.numberTestsTotal // 0) completed, \($r.numberTestErrors // 0) failed"
+              ]
+              + (if ($r.errorMessage // "") != "" then
+                   ["", "Error\(if ($r.errorStatusCode // "") != "" then " (\($r.errorStatusCode))" else "" end): \($r.errorMessage | oneline)"]
+                 else [] end)
+              + (($r.details.componentFailures | arr) as $cf
+                 | if ($cf | length) > 0 then
+                     ["", "Component errors:"]
+                     + [$cf[]
+                        | "  ❌ \(.componentType // .type // "—") \(.fullName // "—")"
+                          + (if (.lineNumber // "") != "" then " (line \(.lineNumber)\(if (.columnNumber // "") != "" then ", col \(.columnNumber)" else "" end))" else "" end)
+                          + ": \((.problem // "—") | oneline)"]
+                   else [] end)
+              + (($r.details.runTestResult.failures | arr) as $tf
+                 | if ($tf | length) > 0 then
+                     ["", "Test failures:"]
+                     + [$tf[]
+                        | "  ❌ \(.name // "—").\(.methodName // "—"): \((.message // "—") | oneline)"
+                          + (if (.stackTrace // "") != "" then "\n     \(.stackTrace | gsub("\n"; "\n     "))" else "" end)]
+                   else [] end)
+              + (($r.details.runTestResult.codeCoverageWarnings | arr) as $cw
+                 | if ($cw | length) > 0 then
+                     ["", "Code coverage warnings:"]
+                     + [$cw[] | "  ⚠️ \(if (.name // "") != "" then "\(.name): " else "" end)\(.message // "—" | oneline)"]
+                   else [] end)
+            end
+          | .[]
+        '
         echo "::endgroup::"
 
         if [[ "$STEP_SUMMARY" == "true" ]]; then
