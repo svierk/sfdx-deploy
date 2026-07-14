@@ -135,7 +135,7 @@ How it works:
 
 The step fails if the deployment fails, while still printing the deployment result and setting the outputs.
 
-The action prints a concise, human-readable table of the affected components (created, changed and deleted) to the log and folds the full JSON result into a collapsible group. When `step-summary` is enabled, the job summary additionally lists the deployed, modified and deleted metadata — including deletions applied via destructive changes — plus a failures table when the deployment did not succeed.
+The action prints a concise, human-readable table of the affected components (created, changed and deleted) to the log and folds a detailed, human-readable breakdown of the deployment result — including component errors, test failures and code coverage warnings — into a collapsible "Deployment details" group (or "Validation details" for dry-runs). When `step-summary` is enabled, the job summary additionally lists the deployed, modified and deleted metadata — including deletions applied via destructive changes — plus a failures table when the deployment did not succeed.
 
 ## References
 
