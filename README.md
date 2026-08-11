@@ -1,6 +1,6 @@
 # 🚀 SFDX Deploy
 
-This repository implements a simple GitHub composite action for deploying Salesforce metadata to a target org. It supports source directories, manifest (`package.xml`) and metadata component selectors, configurable Apex test levels, validation-only (`--dry-run`) deployments, and optional **delta deployments** (only the components that changed between two git refs) via the [sfdx-git-delta](https://github.com/scolladon/sfdx-git-delta) plugin — which makes it equally suitable for pull request validation and for the actual deployment to higher environments.
+This repository implements a simple GitHub composite action for deploying Salesforce metadata to a target org. It supports source directories, manifest (`package.xml`) and metadata component selectors, configurable Apex test levels, validation-only (`--dry-run`) deployments, and optional **delta deployments** (only the components that changed between two git refs) via the [sfdx-git-delta](https://github.com/scolladon/sfdx-git-delta) plugin - which makes it equally suitable for pull request validation and for the actual deployment to higher environments.
 
 ## Usage
 
@@ -8,30 +8,41 @@ This repository implements a simple GitHub composite action for deploying Salesf
 
 After installing the SF CLI and authorizing the relevant org, a check-only validation could look like this:
 
-> Check out with `fetch-depth: 0` so metadata deletions can be detected (see [Deleting metadata](#deleting-metadata-destructive-changes)). Set `destructive-changes: false` if you don't need this — then a shallow checkout is fine.
+> Check out with `fetch-depth: 0` so metadata deletions can be detected (see [Deleting metadata](#deleting-metadata-destructive-changes)). Set `destructive-changes: false` if you don't need this - then a shallow checkout is fine.
 
 ```yaml
+# Validate pull requests with `pull_request`, never `pull_request_target` - the
+# latter would run fork code with this repository's org credentials.
+on:
+  pull_request:
+    branches: [main]
+
+# Least-privilege token: this pipeline only reads the repository.
+permissions:
+  contents: read
+
 jobs:
   validation:
     name: Validation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false # don't leave the GITHUB_TOKEN in .git/config for later steps
 
       - name: Install SF CLI
-        uses: svierk/sfdx-cli-setup@main
+        uses: svierk/sfdx-cli-setup@v1.1.2
 
       - name: Salesforce Org Login
-        uses: svierk/sfdx-login@main
+        uses: svierk/sfdx-login@v1.4.2
         with:
           sfdx-url: ${{ secrets.SFDX_AUTH_URL }}
           alias: target-org
 
       - name: Validate Deployment
-        uses: svierk/sfdx-deploy@main
+        uses: svierk/sfdx-deploy@v1.2.1
         with:
           source-dir: force-app
           target-org: target-org
@@ -43,12 +54,13 @@ jobs:
 
 ```yaml
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0            # required so metadata deletions can be detected
+          persist-credentials: false
 
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@main
+        uses: svierk/sfdx-deploy@v1.2.1
         with:
           source-dir: force-app
           target-org: target-org
@@ -61,12 +73,13 @@ Delta mode uses [sfdx-git-delta](https://github.com/scolladon/sfdx-git-delta) to
 
 ```yaml
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Deploy Changed Components
-        uses: svierk/sfdx-deploy@main
+        uses: svierk/sfdx-deploy@v1.2.1
         with:
           delta: true
           delta-from: origin/${{ github.base_ref }}
@@ -77,21 +90,22 @@ Delta mode uses [sfdx-git-delta](https://github.com/scolladon/sfdx-git-delta) to
 
 ### Deleting metadata (destructive changes)
 
-A plain Salesforce source deploy is **additive** — it never deletes a component from the org just because its file was removed from the repo. This action improves on that: it detects metadata you deleted in the repository (via [sfdx-git-delta](https://github.com/scolladon/sfdx-git-delta)) and applies those deletions to the target org **after** the deployment, for both delta *and* normal full deployments. This behaviour is **on by default** (`destructive-changes: true`); set it to `false` for an additive-only deploy.
+A plain Salesforce source deploy is **additive** - it never deletes a component from the org just because its file was removed from the repo. This action improves on that: it detects metadata you deleted in the repository (via [sfdx-git-delta](https://github.com/scolladon/sfdx-git-delta)) and applies those deletions to the target org **after** the deployment, for both delta *and* normal full deployments. This behaviour is **on by default** (`destructive-changes: true`); set it to `false` for an additive-only deploy.
 
 ```yaml
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0            # required so deletions can be detected
+          persist-credentials: false
 
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@main
+        uses: svierk/sfdx-deploy@v1.2.1
         with:
           source-dir: force-app
           target-org: target-org
           test-level: RunLocalTests
-          # destructive-changes: true  # default — components deleted in the repo are deleted on the org
+          # destructive-changes: true  # default - components deleted in the repo are deleted on the org
 ```
 
 How it works:
@@ -135,7 +149,26 @@ How it works:
 
 The step fails if the deployment fails, while still printing the deployment result and setting the outputs.
 
-The action prints a concise, human-readable table of the affected components (created, changed and deleted) to the log and folds a detailed, human-readable breakdown of the deployment result — including component errors, test failures and code coverage warnings — into a collapsible "Deployment details" group (or "Validation details" for dry-runs). When `step-summary` is enabled, the job summary additionally lists the deployed, modified and deleted metadata — including deletions applied via destructive changes — plus a failures table when the deployment did not succeed.
+The action prints a concise, human-readable table of the affected components (created, changed and deleted) to the log and folds a detailed, human-readable breakdown of the deployment result - including component errors, test failures and code coverage warnings - into a collapsible "Deployment details" group (or "Validation details" for dry-runs). When `step-summary` is enabled, the job summary additionally lists the deployed, modified and deleted metadata - including deletions applied via destructive changes - plus a failures table when the deployment did not succeed.
+
+## Security & versioning
+
+Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-deploy@v1.2.1`. Do the same in your own pipelines:
+
+- **Never reference a mutable ref** such as `@main` or `@v1`. It runs whatever code sits on that branch/tag at run time - with access to your org credentials - so a compromised or rewritten ref would run unnoticed.
+- **Good - pin to an exact release tag** (`@v1.2.1`). Readable, concrete, and bumped through reviewed pull requests.
+- **Strictest - pin to a full-length commit SHA** (`@a1b2c3d…`) with the version as a trailing comment. A SHA can never be re-pointed by the publisher; the cost is readability. Worth it for actions from publishers you don't control.
+- **Enable [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot) for `github-actions`** so those pins are bumped for you instead of silently ageing. Note that Dependabot only scans `.github/workflows` and a root `action.yml` - copy-paste snippets in a README are not covered and have to be updated by hand.
+
+This applies to **all** actions your workflows reference - this action as well as `actions/*` and any other third-party action. Latest versions at the time of writing: [`actions/checkout@v7.0.1`](https://github.com/actions/checkout/releases), [`svierk/sfdx-cli-setup@v1.1.2`](https://github.com/svierk/sfdx-cli-setup/releases), [`svierk/sfdx-login@v1.4.2`](https://github.com/svierk/sfdx-login/releases), [`svierk/sfdx-deploy@v1.2.1`](https://github.com/svierk/sfdx-deploy/releases).
+
+Beyond pinning, a few rules are worth copying into the workflow that calls this action:
+
+- **Least-privilege `GITHUB_TOKEN`** - declare a `permissions:` block granting only what the job needs. This action itself needs no token at all, so `contents: read` is enough for the deploy job.
+- **`persist-credentials: false` on checkout** - the token is not written to `.git/config`, so later steps (SF CLI, third-party actions) cannot reuse it. The delta and destructive-change detection reads the local git history only and works fine without persisted credentials.
+- **Secrets travel as secrets** - pass them straight into an action input (`sfdx-url: ${{ secrets.SFDX_AUTH_URL }}`) and reference them in your own shell steps as **environment variables** (`"$TARGET_ORG"`), never by interpolating `${{ ... }}` into the script itself - that would allow command injection and can leak values into the log. Every input of this action is handed to the shell through an `env:` mapping for exactly that reason.
+- **Validate pull requests with `pull_request`, never `pull_request_target`** - the latter runs with the base repository's secrets, which would let a fork execute its own code against your org.
+- **Gate production behind a [GitHub Environment](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment)** - required reviewers and environment-scoped secrets keep a non-dry-run deploy from being triggered accidentally.
 
 ## References
 

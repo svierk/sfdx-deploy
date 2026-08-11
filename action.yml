@@ -154,7 +154,7 @@ runs:
         # are missed: sfdx-git-delta needs the full history to diff.
         warn_if_shallow() {
           if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
-            echo "::warning::The repository is a shallow clone — sfdx-git-delta may miss changes, including metadata deletions. Check out with 'fetch-depth: 0'."
+            echo "::warning::The repository is a shallow clone - sfdx-git-delta may miss changes, including metadata deletions. Check out with 'fetch-depth: 0'."
           fi
         }
 
@@ -181,7 +181,7 @@ runs:
         destructive=""
 
         if [[ "$DELTA" == "true" ]]; then
-          echo "Delta mode enabled — generating manifest from git diff..."
+          echo "Delta mode enabled - generating manifest from git diff..."
 
           if [[ -z "$DELTA_FROM" ]]; then
             echo "::error::Delta mode requires the 'delta-from' input (a git ref to diff against)."
@@ -200,7 +200,7 @@ runs:
           [[ "$DESTRUCTIVE_CHANGES" == "true" ]] && has_destructions "$candidate" && destructive="$candidate"
 
           if [[ "$additive" == "false" && -z "$destructive" ]]; then
-            echo "ℹ️ No deployable changes detected in the delta — skipping."
+            echo "ℹ️ No deployable changes detected in the delta - skipping."
             {
               echo "deploy-id="
               echo "status=Nothing to deploy"
@@ -235,12 +235,12 @@ runs:
               candidate="changed-sources/destructiveChanges/destructiveChanges.xml"
               has_destructions "$candidate" && destructive="$candidate"
             else
-              echo "::warning::Cannot resolve git range '${from}'..'${to}' to detect deletions — deploying additively. Provide 'delta-from' and check out with fetch-depth: 0."
+              echo "::warning::Cannot resolve git range '${from}'..'${to}' to detect deletions - deploying additively. Provide 'delta-from' and check out with fetch-depth: 0."
             fi
           fi
 
           if [[ -n "$destructive" ]]; then
-            echo "🗑️  Metadata deletions detected — they will be applied after the deployment."
+            echo "🗑️  Metadata deletions detected - they will be applied after the deployment."
             if [[ -n "$MANIFEST" ]]; then
               args+=(--manifest "$MANIFEST")
             else
@@ -314,11 +314,11 @@ runs:
         # type lives under .componentType.
         components=$(echo "$result" | jq -c '
           [
-            (.result.files[]? | {state: (.state // "—"), type: (.type // "—"), fullName: (.fullName // "—")}),
+            (.result.files[]? | {state: (.state // "-"), type: (.type // "-"), fullName: (.fullName // "-")}),
             (.result.details.componentSuccesses[]?
               | select((.deleted == true) or (.deleted == "true"))
               | select((.fullName // "") != "" and (.fullName // "") != "package.xml")
-              | {state: "Deleted", type: (.componentType // "—"), fullName: .fullName})
+              | {state: "Deleted", type: (.componentType // "-"), fullName: .fullName})
           ]
           | unique')
 
@@ -347,9 +347,9 @@ runs:
         # folded into a collapsible group so it no longer clutters the log.
         echo ""
         if [[ "$exit_code" -eq 0 ]]; then
-          echo "✅ ${noun} ${status:-completed}${deploy_id:+ (ID: $deploy_id)} — ${counts}"
+          echo "✅ ${noun} ${status:-completed}${deploy_id:+ (ID: $deploy_id)} - ${counts}"
         else
-          echo "❌ ${noun} failed${deploy_id:+ (ID: $deploy_id)} — ${counts}"
+          echo "❌ ${noun} failed${deploy_id:+ (ID: $deploy_id)} - ${counts}"
         fi
 
         comp_tsv=$(echo "$components" | jq -r '
@@ -371,7 +371,7 @@ runs:
         echo "::group::${noun} details"
         echo "$result" | jq -r '
           def arr: if . == null then [] elif type == "array" then . else [.] end;
-          def yn: if . == true or . == "true" then "yes" elif . == false or . == "false" then "no" else "—" end;
+          def yn: if . == true or . == "true" then "yes" elif . == false or . == "false" then "no" else "-" end;
           def oneline: tostring | gsub("\n"; " ");
           .result as $r
           | if ($r // {}) == {} then
@@ -380,13 +380,13 @@ runs:
               + (if (.message // "") != "" then ["Message: \(.message)"] else [] end)
             else
               [
-                "Deploy ID:          \($r.id // "—")",
-                "Status:             \($r.status // "—")",
+                "Deploy ID:          \($r.id // "-")",
+                "Status:             \($r.status // "-")",
                 "Check only:         \($r.checkOnly | yn)",
                 "Rollback on error:  \($r.rollbackOnError | yn)",
-                "Created by:         \($r.createdByName // "—")",
-                "Started:            \($r.createdDate // "—")",
-                "Completed:          \($r.completedDate // "—")",
+                "Created by:         \($r.createdByName // "-")",
+                "Started:            \($r.createdDate // "-")",
+                "Completed:          \($r.completedDate // "-")",
                 "Components:         \($r.numberComponentsDeployed // 0)/\($r.numberComponentsTotal // 0) deployed, \($r.numberComponentErrors // 0) failed",
                 "Tests:              \($r.numberTestsCompleted // 0)/\($r.numberTestsTotal // 0) completed, \($r.numberTestErrors // 0) failed"
               ]
@@ -397,21 +397,21 @@ runs:
                  | if ($cf | length) > 0 then
                      ["", "Component errors:"]
                      + [$cf[]
-                        | "  ❌ \(.componentType // .type // "—") \(.fullName // "—")"
+                        | "  ❌ \(.componentType // .type // "-") \(.fullName // "-")"
                           + (if (.lineNumber // "") != "" then " (line \(.lineNumber)\(if (.columnNumber // "") != "" then ", col \(.columnNumber)" else "" end))" else "" end)
-                          + ": \((.problem // "—") | oneline)"]
+                          + ": \((.problem // "-") | oneline)"]
                    else [] end)
               + (($r.details.runTestResult.failures | arr) as $tf
                  | if ($tf | length) > 0 then
                      ["", "Test failures:"]
                      + [$tf[]
-                        | "  ❌ \(.name // "—").\(.methodName // "—"): \((.message // "—") | oneline)"
+                        | "  ❌ \(.name // "-").\(.methodName // "-"): \((.message // "-") | oneline)"
                           + (if (.stackTrace // "") != "" then "\n     \(.stackTrace | gsub("\n"; "\n     "))" else "" end)]
                    else [] end)
               + (($r.details.runTestResult.codeCoverageWarnings | arr) as $cw
                  | if ($cw | length) > 0 then
                      ["", "Code coverage warnings:"]
-                     + [$cw[] | "  ⚠️ \(if (.name // "") != "" then "\(.name): " else "" end)\(.message // "—" | oneline)"]
+                     + [$cw[] | "  ⚠️ \(if (.name // "") != "" then "\(.name): " else "" end)\(.message // "-" | oneline)"]
                    else [] end)
             end
           | .[]
@@ -424,7 +424,7 @@ runs:
             echo "### ${icon} ${noun} ${status:-result}"
             echo ""
             if [[ "$DRY_RUN" == "true" ]]; then
-              echo "- **Mode:** Validation only (dry-run / check-only — nothing was saved to the org)"
+              echo "- **Mode:** Validation only (dry-run / check-only - nothing was saved to the org)"
             else
               echo "- **Mode:** Deployment (components saved to the org)"
             fi
@@ -453,7 +453,7 @@ runs:
               echo "| ---- | ---- | ------- |"
               echo "$result" | jq -r '
                 [.result.files[]? | select(.state == "Failed")
-                 | {type: (.type // "—"), fullName: (.fullName // "—"), problem: ((.error // .problemType // "—") | gsub("\n"; " "))}]
+                 | {type: (.type // "-"), fullName: (.fullName // "-"), problem: ((.error // .problemType // "-") | gsub("\n"; " "))}]
                 | unique[]
                 | "| \(.type) | `\(.fullName)` | \(.problem) |"'
               echo ""
