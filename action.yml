@@ -7,13 +7,13 @@ branding:
 
 inputs:
   source-dir:
-    description: Comma-separated list of source directories to deploy, e.g. "force-app,my-other-app".
+    description: Source directories to deploy, as a comma-separated or multi-line list, e.g. "force-app,my-other-app".
     required: false
   manifest:
     description: Path to a manifest (package.xml) file that specifies the components to deploy.
     required: false
   metadata:
-    description: Comma-separated list of metadata component names to deploy, e.g. "ApexClass,CustomObject:Account".
+    description: Metadata component names to deploy, as a comma-separated or multi-line list, e.g. "ApexClass,CustomObject:Account".
     required: false
   destructive-changes:
     description: >
@@ -50,7 +50,7 @@ inputs:
       Ignored when the "tests" input is provided (the CLI then runs the specified tests).
     required: false
   tests:
-    description: Comma-separated list of Apex tests to run, used with the RunSpecifiedTests test level.
+    description: Apex tests to run, as a comma-separated or multi-line list, used with the RunSpecifiedTests test level.
     required: false
   dry-run:
     description: Validate the deployment without saving the components to the org (check-only deployment).
@@ -122,13 +122,31 @@ runs:
           icon="🚀"
         fi
 
-        # Append a flag once per comma-separated value (trimmed).
+        # Splits a comma- or newline-separated input into the global SPLIT array
+        # and trims the surrounding whitespace, so that both notations work:
+        #   source-dir: 'force-app,my-other-app'
+        #   source-dir: |
+        #     force-app
+        #     my-other-app
+        split_list() {
+          SPLIT=()
+          local raw item
+          raw="${1//,/$'\n'}"
+          while IFS= read -r item; do
+            item="${item#"${item%%[![:space:]]*}"}"
+            item="${item%"${item##*[![:space:]]}"}"
+            if [[ -n "$item" ]]; then
+              SPLIT+=("$item")
+            fi
+          done <<< "$raw"
+        }
+
+        # Append a flag once per list value (see split_list).
         add_multi() {
-          local flag="$1" values="$2" item
-          IFS=',' read -ra items <<< "$values"
-          for item in "${items[@]}"; do
-            item="$(echo "$item" | xargs)"
-            [[ -n "$item" ]] && args+=("$flag" "$item")
+          local flag="$1" item
+          split_list "$2"
+          for item in ${SPLIT[@]+"${SPLIT[@]}"}; do
+            args+=("$flag" "$item")
           done
         }
 
@@ -249,14 +267,10 @@ runs:
               rm -rf generated-manifest
               mkdir -p generated-manifest
               gen=()
-              if [[ -n "$SOURCE_DIR" ]]; then
-                IFS=',' read -ra _sd <<< "$SOURCE_DIR"
-                for d in "${_sd[@]}"; do d="$(echo "$d" | xargs)"; [[ -n "$d" ]] && gen+=(--source-dir "$d"); done
-              fi
-              if [[ -n "$METADATA" ]]; then
-                IFS=',' read -ra _md <<< "$METADATA"
-                for m in "${_md[@]}"; do m="$(echo "$m" | xargs)"; [[ -n "$m" ]] && gen+=(--metadata "$m"); done
-              fi
+              split_list "$SOURCE_DIR"
+              for d in ${SPLIT[@]+"${SPLIT[@]}"}; do gen+=(--source-dir "$d"); done
+              split_list "$METADATA"
+              for m in ${SPLIT[@]+"${SPLIT[@]}"}; do gen+=(--metadata "$m"); done
               # Fall back to the package directories from sfdx-project.json when
               # no explicit source was given (same default the CLI would deploy).
               if [[ ${#gen[@]} -eq 0 && -f sfdx-project.json ]]; then

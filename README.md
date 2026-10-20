@@ -42,7 +42,7 @@ jobs:
           alias: target-org
 
       - name: Validate Deployment
-        uses: svierk/sfdx-deploy@v1.2.1
+        uses: svierk/sfdx-deploy@v1.3.0
         with:
           source-dir: force-app
           target-org: target-org
@@ -60,12 +60,31 @@ jobs:
           persist-credentials: false
 
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@v1.2.1
+        uses: svierk/sfdx-deploy@v1.3.0
         with:
           source-dir: force-app
           target-org: target-org
           test-level: RunLocalTests
 ```
+
+### List inputs (comma-separated or multi-line)
+
+The list inputs - `source-dir`, `metadata` and `tests` - accept a comma-separated string as well as a multi-line block, and the two notations can be mixed freely within one step. A comma-separated string keeps short lists on a single line, a block stays readable once a list grows:
+
+```yaml
+      - name: Deploy Metadata
+        uses: svierk/sfdx-deploy@v1.3.0
+        with:
+          source-dir: 'force-app,my-other-app' # comma-separated
+          tests: | # multi-line block
+            AccountServiceTest
+            OpportunityServiceTest
+            LeadConversionTest
+          target-org: target-org
+          test-level: RunSpecifiedTests
+```
+
+Surrounding whitespace and blank lines are ignored, so `'force-app, my-other-app'` is read exactly like the tightly packed `'force-app,my-other-app'`. Whitespace inside a value is kept, e.g. for a layout like `Layout:Account-Account Layout`.
 
 ### Delta deployment (only changed components)
 
@@ -79,7 +98,7 @@ Delta mode uses [sfdx-git-delta](https://github.com/scolladon/sfdx-git-delta) to
           persist-credentials: false
 
       - name: Deploy Changed Components
-        uses: svierk/sfdx-deploy@v1.2.1
+        uses: svierk/sfdx-deploy@v1.3.0
         with:
           delta: true
           delta-from: origin/${{ github.base_ref }}
@@ -100,7 +119,7 @@ A plain Salesforce source deploy is **additive** - it never deletes a component 
           persist-credentials: false
 
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@v1.2.1
+        uses: svierk/sfdx-deploy@v1.3.0
         with:
           source-dir: force-app
           target-org: target-org
@@ -119,16 +138,16 @@ How it works:
 
 | Name               | Required | Default | Description                                                                                   |
 | ------------------ | -------- | ------- | --------------------------------------------------------------------------------------------- |
-| `source-dir`       | no       |         | Comma-separated list of source directories to deploy.                                          |
+| `source-dir`       | no       |         | Source directories to deploy, comma-separated or multi-line.                                   |
 | `manifest`         | no       |         | Path to a manifest (`package.xml`) file specifying the components to deploy.                   |
-| `metadata`         | no       |         | Comma-separated list of metadata component names, e.g. `ApexClass,CustomObject:Account`.       |
+| `metadata`         | no       |         | Metadata component names, comma-separated or multi-line, e.g. `ApexClass,CustomObject:Account`. |
 | `destructive-changes` | no    | `true`  | Auto-detect metadata deleted in the repo (via sfdx-git-delta) and delete it on the org **after** the deploy. Works for full and delta deployments. Needs `fetch-depth: 0`. Set `false` for additive-only. |
 | `delta`            | no       | `false` | Deploy only components changed between two git refs (via sfdx-git-delta). Needs `fetch-depth: 0`. |
 | `delta-from`       | no       |         | Git ref to compare from when detecting changes/deletions, e.g. `origin/main`. Required in delta mode; defaults to `HEAD~1` for destructive changes on full deployments. |
 | `delta-to`         | no       | `HEAD`  | Git ref to compare to when detecting changes/deletions.                                        |
 | `target-org`       | no       |         | Username or alias of the target org. Not required if the default org is set.                   |
 | `test-level`       | no       |         | `NoTestRun`, `RunSpecifiedTests`, `RunLocalTests` or `RunAllTestsInOrg`.                       |
-| `tests`            | no       |         | Comma-separated Apex tests for the `RunSpecifiedTests` level.                                  |
+| `tests`            | no       |         | Apex tests for the `RunSpecifiedTests` level, comma-separated or multi-line.                   |
 | `dry-run`          | no       | `false` | Validate the deployment without saving components (check-only deployment).                     |
 | `ignore-conflicts` | no       | `false` | Deploy local files even if they overwrite changes in the org.                                  |
 | `ignore-warnings`  | no       | `false` | Allow the deployment to complete successfully despite warnings.                                |
@@ -153,14 +172,14 @@ The action prints a concise, human-readable table of the affected components (cr
 
 ## Security & versioning
 
-Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-deploy@v1.2.1`. Do the same in your own pipelines:
+Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-deploy@v1.3.0`. Do the same in your own pipelines:
 
 - **Never reference a mutable ref** such as `@main` or `@v1`. It runs whatever code sits on that branch/tag at run time - with access to your org credentials - so a compromised or rewritten ref would run unnoticed.
-- **Good - pin to an exact release tag** (`@v1.2.1`). Readable, concrete, and bumped through reviewed pull requests.
+- **Good - pin to an exact release tag** (`@v1.3.0`). Readable, concrete, and bumped through reviewed pull requests.
 - **Strictest - pin to a full-length commit SHA** (`@a1b2c3d…`) with the version as a trailing comment. A SHA can never be re-pointed by the publisher; the cost is readability. Worth it for actions from publishers you don't control.
 - **Enable [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot) for `github-actions`** so those pins are bumped for you instead of silently ageing. Note that Dependabot only scans `.github/workflows` and a root `action.yml` - copy-paste snippets in a README are not covered and have to be updated by hand.
 
-This applies to **all** actions your workflows reference - this action as well as `actions/*` and any other third-party action. Latest versions at the time of writing: [`actions/checkout@v7.0.1`](https://github.com/actions/checkout/releases), [`svierk/sfdx-cli-setup@v1.1.2`](https://github.com/svierk/sfdx-cli-setup/releases), [`svierk/sfdx-login@v1.4.2`](https://github.com/svierk/sfdx-login/releases), [`svierk/sfdx-deploy@v1.2.1`](https://github.com/svierk/sfdx-deploy/releases).
+This applies to **all** actions your workflows reference - this action as well as `actions/*` and any other third-party action. Latest versions at the time of writing: [`actions/checkout@v7.0.1`](https://github.com/actions/checkout/releases), [`svierk/sfdx-cli-setup@v1.1.2`](https://github.com/svierk/sfdx-cli-setup/releases), [`svierk/sfdx-login@v1.4.2`](https://github.com/svierk/sfdx-login/releases), [`svierk/sfdx-deploy@v1.3.0`](https://github.com/svierk/sfdx-deploy/releases).
 
 Beyond pinning, a few rules are worth copying into the workflow that calls this action:
 
