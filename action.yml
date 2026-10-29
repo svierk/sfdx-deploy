@@ -249,7 +249,11 @@ runs:
             if git rev-parse --verify --quiet "$from" >/dev/null && git rev-parse --verify --quiet "$to" >/dev/null; then
               ensure_sgd
               echo "Detecting deleted metadata between '$from' and '$to'..."
-              generate_delta "$from" "$to"
+              # --generate-delta is needed even though the copies go unused:
+              # without it, sfdx-git-delta before v7.4.1 reports a bundle that
+              # only lost one file (e.g. an LWC's .css) as deleted as a whole,
+              # and the post-destructive changes would delete it from the org.
+              generate_delta "$from" "$to" --generate-delta
               candidate="changed-sources/destructiveChanges/destructiveChanges.xml"
               has_destructions "$candidate" && destructive="$candidate"
             else
