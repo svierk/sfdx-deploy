@@ -142,6 +142,7 @@ How it works:
 | `manifest`         | no       |         | Path to a manifest (`package.xml`) file specifying the components to deploy.                   |
 | `metadata`         | no       |         | Metadata component names, comma-separated or multi-line, e.g. `ApexClass,CustomObject:Account`. |
 | `destructive-changes` | no    | `true`  | Auto-detect metadata deleted in the repo (via sfdx-git-delta) and delete it on the org **after** the deploy. Works for full and delta deployments. Needs `fetch-depth: 0`. Set `false` for additive-only. |
+| `exclude`          | no       |         | Patterns to leave out of this deployment, comma-separated or multi-line in `.forceignore` syntax. They apply on top of the project's `.forceignore`, which is restored afterwards. See [SFDX Agent Deploy](https://github.com/svierk/sfdx-agent-deploy). |
 | `delta`            | no       | `false` | Deploy only components changed between two git refs (via sfdx-git-delta). Needs `fetch-depth: 0`. |
 | `delta-from`       | no       |         | Git ref to compare from when detecting changes/deletions, e.g. `origin/main`. Required in delta mode; defaults to `HEAD~1` for destructive changes on full deployments. |
 | `delta-to`         | no       | `HEAD`  | Git ref to compare to when detecting changes/deletions.                                        |
@@ -152,7 +153,7 @@ How it works:
 | `ignore-conflicts` | no       | `false` | Deploy local files even if they overwrite changes in the org.                                  |
 | `ignore-warnings`  | no       | `false` | Allow the deployment to complete successfully despite warnings.                                |
 | `wait`             | no       | `33`    | Number of minutes to wait for the deployment to complete.                                      |
-| `api-version`      | no       |         | Override the api version used for api requests, for example `59.0`.                            |
+| `api-version`      | no       |         | Override the api version used for api requests, for example `68.0`.                            |
 | `step-summary`     | no       | `true`  | Write a result section to the GitHub Actions [job summary](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#adding-a-job-summary). Set to `false` to avoid collisions with a custom workflow summary. |
 
 > When the `tests` input is provided, the CLI runs the specified tests and the `test-level` input is ignored.
