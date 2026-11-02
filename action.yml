@@ -24,6 +24,13 @@ inputs:
       deploy additively only.
     required: false
     default: 'true'
+  exclude:
+    description: >
+      Patterns to leave out of this deployment, as a comma-separated or multi-line list in .forceignore syntax,
+      e.g. "**/aiEvaluationDefinitions/**". They apply on top of the .forceignore of the project, which is
+      restored after the deployment. Use it for what has to reach the org in a later step, like the "exclude"
+      output of sfdx-agent-deploy.
+    required: false
   delta:
     description: >
       Deploy only the components that changed between two git refs, using the sfdx-git-delta plugin.
@@ -69,7 +76,7 @@ inputs:
     required: false
     default: '33'
   api-version:
-    description: Override the api version used for api requests made by this action, for example '59.0'.
+    description: Override the api version used for api requests made by this action, for example '68.0'.
     required: false
   step-summary:
     description: Write a result section to the GitHub Actions job summary. Set to false to avoid collisions with a custom workflow summary.
@@ -95,6 +102,7 @@ runs:
         MANIFEST: ${{ inputs.manifest }}
         METADATA: ${{ inputs.metadata }}
         DESTRUCTIVE_CHANGES: ${{ inputs.destructive-changes }}
+        EXCLUDE: ${{ inputs.exclude }}
         DELTA: ${{ inputs.delta }}
         DELTA_FROM: ${{ inputs.delta-from }}
         DELTA_TO: ${{ inputs.delta-to }}
@@ -184,7 +192,10 @@ runs:
           rm -rf changed-sources
           mkdir -p changed-sources
           local log
-          if ! log="$(sf sgd source delta --from "$1" --to "$2" --output-dir changed-sources ${3:-} 2>&1)"; then
+          # sfdx-git-delta only honors an ignore file it is told about.
+          local ignore=()
+          [[ -n "$EXCLUDE" ]] && ignore=(--ignore-file .forceignore --ignore-destructive-file .forceignore)
+          if ! log="$(sf sgd source delta --from "$1" --to "$2" --output-dir changed-sources ${3:-} ${ignore[@]+"${ignore[@]}"} 2>&1)"; then
             echo "$log"
             echo "::error::sfdx-git-delta failed to generate the delta between '$1' and '$2'."
             return 1
@@ -195,6 +206,23 @@ runs:
         has_destructions() {
           [[ -f "$1" ]] && grep -q '<types>' "$1"
         }
+
+        # Applies the exclude input through a temporary .forceignore, for both the CLI
+        # and sfdx-git-delta, and puts the project's own file back on exit.
+        if [[ -n "$EXCLUDE" ]]; then
+          split_list "$EXCLUDE"
+          forceignore_backup="$(mktemp)"
+          if [[ -f .forceignore ]]; then
+            cp .forceignore "$forceignore_backup"
+            trap 'cp "$forceignore_backup" .forceignore' EXIT
+          else
+            trap 'rm -f .forceignore' EXIT
+          fi
+          {
+            echo ""
+            printf '%s\n' ${SPLIT[@]+"${SPLIT[@]}"}
+          } >> .forceignore
+        fi
 
         destructive=""
 
