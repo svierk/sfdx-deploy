@@ -185,7 +185,8 @@ runs:
         }
 
         # Generate an sfdx-git-delta output set into changed-sources/ for a range.
-        # $3 may be "--generate-delta" to also copy the changed source files.
+        # $3 may be "--generate-delta" to have the plugin copy the changed source
+        # files. These copies are removed right away, see below.
         # The plugin's chatter (promo footer, progress) is captured and only
         # shown on failure to keep the deployment log clean.
         generate_delta() {
@@ -200,6 +201,15 @@ runs:
             echo "::error::sfdx-git-delta failed to generate the delta between '$1' and '$2'."
             return 1
           fi
+          # The deployment only reads the manifests and takes the components from
+          # the package directories. Left in the workspace, the copies count as
+          # source code for later steps, e.g. as duplicates in a SonarQube scan.
+          find changed-sources -type f \
+            ! -path changed-sources/package/package.xml \
+            ! -path changed-sources/destructiveChanges/destructiveChanges.xml \
+            ! -path changed-sources/destructiveChanges/package.xml \
+            -delete
+          find changed-sources -mindepth 1 -type d -empty -delete
         }
 
         # True when a generated destructiveChanges.xml actually lists components.
