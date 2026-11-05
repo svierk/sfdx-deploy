@@ -217,6 +217,104 @@ runs:
           [[ -f "$1" ]] && grep -q '<types>' "$1"
         }
 
+        # Prints the names of the project's bundles of one kind, "lwc" or "aura": the
+        # folders inside each folder of that name. This covers everything a deployment
+        # can take from the project, whatever selects it, and nothing else of the org.
+        project_bundles() {
+          find . -type d -name "$1" -not -path '*/node_modules/*' -not -path '*/.*' \
+            -exec find {} -mindepth 1 -maxdepth 1 -type d \; | sed 's#.*/##' | sort -u
+        }
+
+        # The <types> element of a manifest for the names in $2, if there are any.
+        manifest_types() {
+          if [[ -n "$2" ]]; then
+            echo "  <types>"
+            echo "$2" | sed 's#.*#    <members>&</members>#'
+            echo "    <name>$1</name>"
+            echo "  </types>"
+          fi
+        }
+
+        # Salesforce reports every LWC and Aura bundle as changed, even when the
+        # deployed files are identical to the org. To tell which ones really changed,
+        # read the bundles from the org up front, as the deployment overwrites them.
+        # Only the project's bundles are read, so the size of the org doesn't matter;
+        # names the org doesn't have yet just return nothing. Without this copy the
+        # result list keeps the states reported by Salesforce.
+        snapshot_bundles() {
+          snapshot_dir=""
+          org_bundles=""
+          local lwc aura flags=() package
+          lwc="$(project_bundles lwc)"
+          aura="$(project_bundles aura)"
+          [[ -n "$lwc$aura" ]] || return 0
+          snapshot_dir="$(mktemp -d)"
+          {
+            echo '<?xml version="1.0" encoding="UTF-8"?>'
+            echo '<Package xmlns="http://soap.sforce.com/2006/04/metadata">'
+            manifest_types LightningComponentBundle "$lwc"
+            manifest_types AuraDefinitionBundle "$aura"
+            echo '</Package>'
+          } > "$snapshot_dir/bundles.xml"
+          [[ -n "$TARGET_ORG" ]] && flags+=(--target-org "$TARGET_ORG")
+          [[ -n "$API_VERSION" ]] && flags+=(--api-version "$API_VERSION")
+          if sf project retrieve start --manifest "$snapshot_dir/bundles.xml" \
+            --target-metadata-dir "$snapshot_dir/org" --unzip ${flags[@]+"${flags[@]}"} >/dev/null 2>&1; then
+            package="$(find "$snapshot_dir/org" -name package.xml -print -quit)"
+            if [[ -n "$package" ]]; then
+              org_bundles="${package%/*}"
+            fi
+          else
+            echo "::notice::Could not read the LWC and Aura bundles from the org - unchanged bundles may be listed as changed."
+          fi
+        }
+
+        # A bundle file without what Salesforce rewrites when it stores one, so that
+        # the comparison only sees real differences. The caller's command substitution
+        # drops the trailing newline, which the org doesn't keep. An Aura -meta.xml also
+        # gets a new XML declaration and root element, unlike the one of an LWC.
+        bundle_file() {
+          if [[ "$1" == */aura/*-meta.xml ]]; then
+            tr -d '[:space:]' < "$1" | sed -E 's/<\?xml[^>]*>//; s/<AuraDefinitionBundle[^>]*>//'
+          else
+            cat "$1"
+          fi
+        }
+
+        # Prints "type:name" for each bundle reported as changed whose deployed files
+        # match the copy from the org, in content and in number, so that an added or
+        # removed file still counts as a change. The org doesn't store the .md files of
+        # a bundle, even though the CLI lists them. Anything unclear stays a change.
+        identical_bundles() {
+          local type bundle dir path stored same count
+          while IFS=$'\t' read -r type bundle; do
+            dir=lwc
+            [[ "$type" == "AuraDefinitionBundle" ]] && dir=aura
+            [[ -d "$org_bundles/$dir/$bundle" ]] || continue
+            same=true
+            count=0
+            while IFS= read -r path; do
+              stored="$org_bundles/$dir/$bundle/${path##*/$dir/$bundle/}"
+              if [[ ! -f "$path" || ! -f "$stored" || "$(bundle_file "$path")" != "$(bundle_file "$stored")" ]]; then
+                same=false
+                break
+              fi
+              count=$((count + 1))
+            done < <(echo "$result" | jq -r --arg type "$type" --arg bundle "$bundle" '
+              .result.files[]?
+              | select(.type == $type and .fullName == $bundle)
+              | (.filePath // empty)
+              | select(endswith(".md") | not)')
+            if [[ "$same" == "true" && "$count" -gt 0 && "$count" -eq "$(find "$org_bundles/$dir/$bundle" -type f | wc -l)" ]]; then
+              echo "$type:$bundle"
+            fi
+          done < <(echo "$result" | jq -r '
+            [.result.files[]?
+             | select(.state == "Changed" and (.type == "LightningComponentBundle" or .type == "AuraDefinitionBundle"))
+             | "\(.type)\t\(.fullName)"]
+            | unique[]')
+        }
+
         # Applies the exclude input through a temporary .forceignore, for both the CLI
         # and sfdx-git-delta, and puts the project's own file back on exit.
         if [[ -n "$EXCLUDE" ]]; then
@@ -346,6 +444,8 @@ runs:
         [[ "$IGNORE_CONFLICTS" == "true" ]] && args+=(--ignore-conflicts)
         [[ "$IGNORE_WARNINGS" == "true" ]] && args+=(--ignore-warnings)
 
+        snapshot_bundles
+
         # Capture the result even on failure so the JSON and outputs are still
         # available, then propagate the CLI exit code to fail the step.
         set +e
@@ -361,16 +461,31 @@ runs:
           echo "status=$status"
         } >> "$GITHUB_OUTPUT"
 
+        identical='[]'
+        if [[ -n "$org_bundles" ]]; then
+          identical="$(identical_bundles | jq -Rsc 'split("\n") | map(select(. != ""))')"
+        fi
+        if [[ -n "$snapshot_dir" ]]; then
+          rm -rf "$snapshot_dir"
+        fi
+
         # Collapse the per-file entries into one row per component. The CLI
         # reports a component once per source file (an LWC as .js/.html/.js-meta.xml,
         # an Apex class as .cls/.cls-meta.xml, ...), so dedupe by type + name +
         # state to list and count each component only once. Deletions from
         # post-destructive changes are not part of .result.files, so pull them
         # from .result.details.componentSuccesses (deleted == true), where the
-        # type lives under .componentType.
-        components=$(echo "$result" | jq -c '
+        # type lives under .componentType. Bundles that match the org are unchanged,
+        # whatever Salesforce reports (see snapshot_bundles).
+        components=$(echo "$result" | jq -c --argjson identical "$identical" '
           [
-            (.result.files[]? | {state: (.state // "-"), type: (.type // "-"), fullName: (.fullName // "-")}),
+            (.result.files[]?
+             | ("\(.type // "-"):\(.fullName // "-")") as $key
+             | {
+                 state: (if .state == "Changed" and ($identical | index($key)) != null then "Unchanged" else (.state // "-") end),
+                 type: (.type // "-"),
+                 fullName: (.fullName // "-")
+               }),
             (.result.details.componentSuccesses[]?
               | select((.deleted == true) or (.deleted == "true"))
               | select((.fullName // "") != "" and (.fullName // "") != "package.xml")
@@ -387,6 +502,12 @@ runs:
         failed_note=""
         [[ "${failed:-0}" -gt 0 ]] && failed_note=" · ❌ ${failed} failed"
         counts="🟢 ${created} created · 🟡 ${changed} changed · 🔴 ${deleted} deleted${failed_note}"
+
+        identical_count=$(echo "$identical" | jq 'length')
+        identical_note=""
+        if [[ "$identical_count" -gt 0 ]]; then
+          identical_note="ℹ️ Not listed: ${identical_count} LWC/Aura bundle(s) that Salesforce reports as changed, but that match the org."
+        fi
 
         # Emit the changed/deleted/failed components as markdown table rows,
         # skipping unchanged ones. Reads $components from the surrounding scope.
@@ -417,6 +538,9 @@ runs:
           printf 'STATE\tTYPE\tNAME\n%s\n' "$comp_tsv" | column -t -s "$(printf '\t')"
         elif [[ "$exit_code" -eq 0 ]]; then
           echo "ℹ️ No components created, changed or deleted."
+        fi
+        if [[ -n "$identical_note" ]]; then
+          echo "$identical_note"
         fi
 
         # Details group ("Deployment details" / "Validation details"): a
@@ -499,6 +623,10 @@ runs:
               echo ""
             elif [[ "$exit_code" -eq 0 ]]; then
               echo "_No components created, changed or deleted._"
+              echo ""
+            fi
+            if [[ -n "$identical_note" ]]; then
+              echo "$identical_note"
               echo ""
             fi
 

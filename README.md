@@ -42,7 +42,7 @@ jobs:
           alias: target-org
 
       - name: Validate Deployment
-        uses: svierk/sfdx-deploy@v1.4.1
+        uses: svierk/sfdx-deploy@v1.4.2
         with:
           source-dir: force-app
           target-org: target-org
@@ -60,7 +60,7 @@ jobs:
           persist-credentials: false
 
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@v1.4.1
+        uses: svierk/sfdx-deploy@v1.4.2
         with:
           source-dir: force-app
           target-org: target-org
@@ -73,7 +73,7 @@ The list inputs - `source-dir`, `metadata` and `tests` - accept a comma-separate
 
 ```yaml
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@v1.4.1
+        uses: svierk/sfdx-deploy@v1.4.2
         with:
           source-dir: 'force-app,my-other-app' # comma-separated
           tests: | # multi-line block
@@ -100,7 +100,7 @@ The action writes the generated manifests to `changed-sources/` and removes the 
           persist-credentials: false
 
       - name: Deploy Changed Components
-        uses: svierk/sfdx-deploy@v1.4.1
+        uses: svierk/sfdx-deploy@v1.4.2
         with:
           delta: true
           delta-from: origin/${{ github.base_ref }}
@@ -121,7 +121,7 @@ A plain Salesforce source deploy is **additive** - it never deletes a component 
           persist-credentials: false
 
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@v1.4.1
+        uses: svierk/sfdx-deploy@v1.4.2
         with:
           source-dir: force-app
           target-org: target-org
@@ -173,16 +173,29 @@ The step fails if the deployment fails, while still printing the deployment resu
 
 The action prints a concise, human-readable table of the affected components (created, changed and deleted) to the log and folds a detailed, human-readable breakdown of the deployment result - including component errors, test failures and code coverage warnings - into a collapsible "Deployment details" group (or "Validation details" for dry-runs). When `step-summary` is enabled, the job summary additionally lists the deployed, modified and deleted metadata - including deletions applied via destructive changes - plus a failures table when the deployment did not succeed.
 
+## Which components are listed as changed
+
+Salesforce reports **every LWC and Aura bundle as changed on every deployment**, even when the deployed files are byte for byte what the org already has. The action corrects this: it reads these bundles from the org before the deployment and compares them with the deployed files afterwards. Only bundles that really differ are listed, including those with an added or removed file. The log and the job summary state how many bundles were left out this way.
+
+- This takes one additional retrieve, limited to the LWC and Aura bundles of the project, so it depends on the size of the project, not of the org. Bundles in the org that the project doesn't contain are not read. Projects without bundles skip the retrieve. If it fails, the deployment continues as usual, a notice is shown and the list contains the bundles as Salesforce reports them.
+- Only the list and its counts change. The bundles are still part of the deployment.
+- The `.md` files of a bundle don't count, as the org doesn't store them. A change to a component's README is therefore not a change to the component.
+
+For all other metadata types the list shows what Salesforce reports, which proved reliable: a component that matches the org is not listed. Two cases can still be surprising:
+
+- **Formatting.** Salesforce stores LWC, Aura and Apex source as it is deployed, so formatting with Prettier doesn't cause differences by itself. Reformatting an existing file is a real change to the text in the org, and is listed once. Whitespace in XML metadata doesn't count.
+- **XML metadata that Salesforce normalizes.** The org adds default values to some types, or changes values such as the canvas position in a Flow. A file that was written by hand or in another tool may never match, and is then listed on every deployment. To resolve this, retrieve the component once and commit the result. Formatting it with Prettier afterwards is fine.
+
 ## Security & versioning
 
-Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-deploy@v1.4.1`. Do the same in your own pipelines:
+Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-deploy@v1.4.2`. Do the same in your own pipelines:
 
 - **Never reference a mutable ref** such as `@main` or `@v1`. It runs whatever code sits on that branch/tag at run time - with access to your org credentials - so a compromised or rewritten ref would run unnoticed.
-- **Good - pin to an exact release tag** (`@v1.4.1`). Readable, concrete, and bumped through reviewed pull requests.
+- **Good - pin to an exact release tag** (`@v1.4.2`). Readable, concrete, and bumped through reviewed pull requests.
 - **Strictest - pin to a full-length commit SHA** (`@a1b2c3d…`) with the version as a trailing comment. A SHA can never be re-pointed by the publisher; the cost is readability. Worth it for actions from publishers you don't control.
 - **Enable [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot) for `github-actions`** so those pins are bumped for you instead of silently ageing. Note that Dependabot only scans `.github/workflows` and a root `action.yml` - copy-paste snippets in a README are not covered and have to be updated by hand.
 
-This applies to **all** actions your workflows reference - this action as well as `actions/*` and any other third-party action. Latest versions at the time of writing: [`actions/checkout@v7.0.1`](https://github.com/actions/checkout/releases), [`svierk/sfdx-cli-setup@v1.1.2`](https://github.com/svierk/sfdx-cli-setup/releases), [`svierk/sfdx-login@v1.4.2`](https://github.com/svierk/sfdx-login/releases), [`svierk/sfdx-deploy@v1.4.1`](https://github.com/svierk/sfdx-deploy/releases).
+This applies to **all** actions your workflows reference - this action as well as `actions/*` and any other third-party action. Latest versions at the time of writing: [`actions/checkout@v7.0.1`](https://github.com/actions/checkout/releases), [`svierk/sfdx-cli-setup@v1.1.2`](https://github.com/svierk/sfdx-cli-setup/releases), [`svierk/sfdx-login@v1.4.2`](https://github.com/svierk/sfdx-login/releases), [`svierk/sfdx-deploy@v1.4.2`](https://github.com/svierk/sfdx-deploy/releases).
 
 Beyond pinning, a few rules are worth copying into the workflow that calls this action:
 
