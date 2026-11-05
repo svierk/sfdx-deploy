@@ -177,7 +177,7 @@ The action prints a concise, human-readable table of the affected components (cr
 
 Salesforce reports **every LWC and Aura bundle as changed on every deployment**, even when the deployed files are byte for byte what the org already has. The action corrects this: it reads these bundles from the org before the deployment and compares them with the deployed files afterwards. Only bundles that really differ are listed, including those with an added or removed file. The log and the job summary state how many bundles were left out this way.
 
-- This takes one additional retrieve of the org's LWC and Aura bundles, and it is skipped for projects without any. If it fails, the deployment continues as usual, a notice is shown and the list contains the bundles as Salesforce reports them.
+- This takes one additional retrieve, limited to the LWC and Aura bundles of the project, so it depends on the size of the project, not of the org. Bundles in the org that the project doesn't contain are not read. Projects without bundles skip the retrieve. If it fails, the deployment continues as usual, a notice is shown and the list contains the bundles as Salesforce reports them.
 - Only the list and its counts change. The bundles are still part of the deployment.
 - The `.md` files of a bundle don't count, as the org doesn't store them. A change to a component's README is therefore not a change to the component.
 

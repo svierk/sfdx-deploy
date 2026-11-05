@@ -217,21 +217,50 @@ runs:
           [[ -f "$1" ]] && grep -q '<types>' "$1"
         }
 
+        # Prints the names of the project's bundles of one kind, "lwc" or "aura": the
+        # folders inside each folder of that name. This covers everything a deployment
+        # can take from the project, whatever selects it, and nothing else of the org.
+        project_bundles() {
+          find . -type d -name "$1" -not -path '*/node_modules/*' -not -path '*/.*' \
+            -exec find {} -mindepth 1 -maxdepth 1 -type d \; | sed 's#.*/##' | sort -u
+        }
+
+        # The <types> element of a manifest for the names in $2, if there are any.
+        manifest_types() {
+          if [[ -n "$2" ]]; then
+            echo "  <types>"
+            echo "$2" | sed 's#.*#    <members>&</members>#'
+            echo "    <name>$1</name>"
+            echo "  </types>"
+          fi
+        }
+
         # Salesforce reports every LWC and Aura bundle as changed, even when the
         # deployed files are identical to the org. To tell which ones really changed,
         # read the bundles from the org up front, as the deployment overwrites them.
-        # Without this copy the result list keeps the states reported by Salesforce.
+        # Only the project's bundles are read, so the size of the org doesn't matter;
+        # names the org doesn't have yet just return nothing. Without this copy the
+        # result list keeps the states reported by Salesforce.
         snapshot_bundles() {
           snapshot_dir=""
           org_bundles=""
-          [[ -n "$(find . -type d \( -name lwc -o -name aura \) -not -path './node_modules/*' -print -quit)" ]] || return 0
-          local flags=() package
+          local lwc aura flags=() package
+          lwc="$(project_bundles lwc)"
+          aura="$(project_bundles aura)"
+          [[ -n "$lwc$aura" ]] || return 0
           snapshot_dir="$(mktemp -d)"
+          {
+            echo '<?xml version="1.0" encoding="UTF-8"?>'
+            echo '<Package xmlns="http://soap.sforce.com/2006/04/metadata">'
+            manifest_types LightningComponentBundle "$lwc"
+            manifest_types AuraDefinitionBundle "$aura"
+            echo '</Package>'
+          } > "$snapshot_dir/bundles.xml"
           [[ -n "$TARGET_ORG" ]] && flags+=(--target-org "$TARGET_ORG")
           [[ -n "$API_VERSION" ]] && flags+=(--api-version "$API_VERSION")
-          if sf project retrieve start --metadata LightningComponentBundle --metadata AuraDefinitionBundle \
-            --target-metadata-dir "$snapshot_dir" --unzip ${flags[@]+"${flags[@]}"} >/dev/null 2>&1; then
-            package="$(find "$snapshot_dir" -name package.xml -print -quit)"
+          if sf project retrieve start --manifest "$snapshot_dir/bundles.xml" \
+            --target-metadata-dir "$snapshot_dir/org" --unzip ${flags[@]+"${flags[@]}"} >/dev/null 2>&1; then
+            package="$(find "$snapshot_dir/org" -name package.xml -print -quit)"
             if [[ -n "$package" ]]; then
               org_bundles="${package%/*}"
             fi
