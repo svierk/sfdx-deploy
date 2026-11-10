@@ -31,6 +31,13 @@ inputs:
       restored after the deployment. Use it for what has to reach the org in a later step, like the "exclude"
       output of sfdx-agent-deploy.
     required: false
+  destructive-exclude:
+    description: >
+      Patterns of components that are never deleted from the org, as a comma-separated or multi-line list in
+      .forceignore syntax, e.g. "**/*.flow-meta.xml". Unlike "exclude", they are still deployed. They apply on top
+      of the .forceignore of the project and the "exclude" input. The log and the job summary list the deletions
+      they hold back. Record types are never deleted anyway, as the Metadata API can't delete them.
+    required: false
   delta:
     description: >
       Deploy only the components that changed between two git refs, using the sfdx-git-delta plugin.
@@ -103,6 +110,7 @@ runs:
         METADATA: ${{ inputs.metadata }}
         DESTRUCTIVE_CHANGES: ${{ inputs.destructive-changes }}
         EXCLUDE: ${{ inputs.exclude }}
+        DESTRUCTIVE_EXCLUDE: ${{ inputs.destructive-exclude }}
         DELTA: ${{ inputs.delta }}
         DELTA_FROM: ${{ inputs.delta-from }}
         DELTA_TO: ${{ inputs.delta-to }}
@@ -184,32 +192,88 @@ runs:
           fi
         }
 
-        # Generate an sfdx-git-delta output set into changed-sources/ for a range.
-        # $3 may be "--generate-delta" to have the plugin copy the changed source
-        # files. These copies are removed right away, see below.
+        # Run sfdx-git-delta for the range $2..$3 into the folder $1. $4 is the file
+        # that decides which deletions to drop, empty for the .forceignore.
+        # --generate-delta is needed even though the copies of the changed source
+        # files go unused: without it, sfdx-git-delta before v7.4.1 reports a bundle
+        # that only lost one file (e.g. an LWC's .css) as deleted as a whole, and the
+        # post-destructive changes would delete it from the org.
         # The plugin's chatter (promo footer, progress) is captured and only
         # shown on failure to keep the deployment log clean.
-        generate_delta() {
-          rm -rf changed-sources
-          mkdir -p changed-sources
-          local log
-          # sfdx-git-delta only honors an ignore file it is told about.
-          local ignore=()
-          [[ -n "$EXCLUDE" ]] && ignore=(--ignore-file .forceignore --ignore-destructive-file .forceignore)
-          if ! log="$(sf sgd source delta --from "$1" --to "$2" --output-dir changed-sources ${3:-} ${ignore[@]+"${ignore[@]}"} 2>&1)"; then
+        sgd_delta() {
+          local out="$1" log ignore=()
+          rm -rf "$out"
+          mkdir -p "$out"
+          # sfdx-git-delta only honors an ignore file it is told about. It checks
+          # deletions against --ignore-destructive-file alone, or against
+          # --ignore-file when there is none.
+          [[ -f .forceignore ]] && ignore+=(--ignore-file .forceignore)
+          [[ -n "$4" ]] && ignore+=(--ignore-destructive-file "$4")
+          if ! log="$(sf sgd source delta --from "$2" --to "$3" --output-dir "$out" --generate-delta ${ignore[@]+"${ignore[@]}"} 2>&1)"; then
             echo "$log"
-            echo "::error::sfdx-git-delta failed to generate the delta between '$1' and '$2'."
+            echo "::error::sfdx-git-delta failed to generate the delta between '$2' and '$3'."
             return 1
           fi
           # The deployment only reads the manifests and takes the components from
           # the package directories. Left in the workspace, the copies count as
           # source code for later steps, e.g. as duplicates in a SonarQube scan.
-          find changed-sources -type f \
-            ! -path changed-sources/package/package.xml \
-            ! -path changed-sources/destructiveChanges/destructiveChanges.xml \
-            ! -path changed-sources/destructiveChanges/package.xml \
+          find "$out" -type f \
+            ! -path "$out/package/package.xml" \
+            ! -path "$out/destructiveChanges/destructiveChanges.xml" \
+            ! -path "$out/destructiveChanges/package.xml" \
             -delete
-          find changed-sources -mindepth 1 -type d -empty -delete
+          find "$out" -mindepth 1 -type d -empty -delete
+        }
+
+        # Prints "type:name" for each component a destructiveChanges.xml lists.
+        destructive_members() {
+          [[ -f "$1" ]] || return 0
+          sed -n \
+            -e 's#.*<types>.*#T#p' \
+            -e 's#.*<members>\(.*\)</members>.*#M\1#p' \
+            -e 's#.*<name>\(.*\)</name>.*#N\1#p' \
+            -e 's#.*</types>.*#E#p' "$1" |
+            awk '/^T/ {n = 0; t = ""; next}
+                 /^M/ {m[++n] = substr($0, 2); next}
+                 /^N/ {t = substr($0, 2); next}
+                 /^E/ {for (i = 1; i <= n; i++) print t ":" m[i]}' |
+            LC_ALL=C sort -u
+        }
+
+        # Generate the sfdx-git-delta output set into changed-sources/ for a range.
+        # With destructive-exclude, a second run without it shows which deletions
+        # the patterns hold back. They go to $protected and to the log.
+        generate_delta() {
+          sgd_delta changed-sources "$1" "$2" "$destructive_ignore"
+          if [[ "$DESTRUCTIVE_CHANGES" == "true" && -n "$destructive_ignore" ]]; then
+            local all
+            all="$(mktemp -d)"
+            temp_paths+=("$all")
+            sgd_delta "$all" "$1" "$2" ""
+            protected="$(LC_ALL=C comm -23 \
+              <(destructive_members "$all/destructiveChanges/destructiveChanges.xml") \
+              <(destructive_members changed-sources/destructiveChanges/destructiveChanges.xml))"
+            rm -rf "$all"
+          fi
+          if [[ -n "$protected" ]]; then
+            echo "🛡️  Not deleted, held back by destructive-exclude:"
+            echo "$protected" | sed 's#:#\t#' | column -t -s "$(printf '\t')" | sed 's#^#   #'
+          fi
+        }
+
+        # Job summary section for the deletions in $protected, if there are any.
+        protected_summary() {
+          local line
+          if [[ -n "$protected" ]]; then
+            echo "**Not deleted (destructive-exclude):**"
+            echo ""
+            echo "| Type | Name |"
+            echo "| ---- | ---- |"
+            while IFS= read -r line; do
+              echo "| ${line%%:*} | \`${line#*:}\` |"
+            done <<< "$protected"
+            echo ""
+          fi
         }
 
         # True when a generated destructiveChanges.xml actually lists components.
@@ -315,21 +379,55 @@ runs:
             | unique[]')
         }
 
+        # Temporary files and folders go outside the workspace and are removed on
+        # exit, which also puts the project's own .forceignore back.
+        temp_paths=()
+        forceignore_restore=""
+        cleanup() {
+          case "$forceignore_restore" in
+            copy) cp "$forceignore_backup" .forceignore ;;
+            remove) rm -f .forceignore ;;
+          esac
+          if [[ ${#temp_paths[@]} -gt 0 ]]; then
+            rm -rf "${temp_paths[@]}"
+          fi
+        }
+        trap cleanup EXIT
+
         # Applies the exclude input through a temporary .forceignore, for both the CLI
-        # and sfdx-git-delta, and puts the project's own file back on exit.
+        # and sfdx-git-delta.
         if [[ -n "$EXCLUDE" ]]; then
           split_list "$EXCLUDE"
-          forceignore_backup="$(mktemp)"
           if [[ -f .forceignore ]]; then
+            forceignore_backup="$(mktemp)"
+            temp_paths+=("$forceignore_backup")
             cp .forceignore "$forceignore_backup"
-            trap 'cp "$forceignore_backup" .forceignore' EXIT
+            forceignore_restore=copy
           else
-            trap 'rm -f .forceignore' EXIT
+            forceignore_restore=remove
           fi
           {
             echo ""
             printf '%s\n' ${SPLIT[@]+"${SPLIT[@]}"}
           } >> .forceignore
+        fi
+
+        # The destructive-exclude patterns only reach sfdx-git-delta, through a
+        # file that adds them to the .forceignore, so that they hold back deletions
+        # but no deployment.
+        destructive_ignore=""
+        protected=""
+        if [[ -n "$DESTRUCTIVE_EXCLUDE" ]]; then
+          split_list "$DESTRUCTIVE_EXCLUDE"
+          destructive_ignore="$(mktemp)"
+          temp_paths+=("$destructive_ignore")
+          {
+            if [[ -f .forceignore ]]; then
+              cat .forceignore
+              echo ""
+            fi
+            printf '%s\n' ${SPLIT[@]+"${SPLIT[@]}"}
+          } > "$destructive_ignore"
         fi
 
         destructive=""
@@ -344,7 +442,7 @@ runs:
 
           warn_if_shallow
           ensure_sgd
-          generate_delta "$DELTA_FROM" "$DELTA_TO" --generate-delta
+          generate_delta "$DELTA_FROM" "$DELTA_TO"
 
           manifest="changed-sources/package/package.xml"
           candidate="changed-sources/destructiveChanges/destructiveChanges.xml"
@@ -366,6 +464,7 @@ runs:
                 echo ""
                 echo "- **Status:** Nothing to deploy (no changes in the delta)"
                 echo ""
+                protected_summary
               } >> "$GITHUB_STEP_SUMMARY"
             fi
             exit 0
@@ -385,11 +484,7 @@ runs:
             if git rev-parse --verify --quiet "$from" >/dev/null && git rev-parse --verify --quiet "$to" >/dev/null; then
               ensure_sgd
               echo "Detecting deleted metadata between '$from' and '$to'..."
-              # --generate-delta is needed even though the copies go unused:
-              # without it, sfdx-git-delta before v7.4.1 reports a bundle that
-              # only lost one file (e.g. an LWC's .css) as deleted as a whole,
-              # and the post-destructive changes would delete it from the org.
-              generate_delta "$from" "$to" --generate-delta
+              generate_delta "$from" "$to"
               candidate="changed-sources/destructiveChanges/destructiveChanges.xml"
               has_destructions "$candidate" && destructive="$candidate"
             else
@@ -502,6 +597,9 @@ runs:
         failed_note=""
         [[ "${failed:-0}" -gt 0 ]] && failed_note=" · ❌ ${failed} failed"
         counts="🟢 ${created} created · 🟡 ${changed} changed · 🔴 ${deleted} deleted${failed_note}"
+        if [[ -n "$protected" ]]; then
+          counts+=" · 🛡️ $(echo "$protected" | wc -l | tr -d ' ') not deleted"
+        fi
 
         identical_count=$(echo "$identical" | jq 'length')
         identical_note=""
@@ -629,6 +727,7 @@ runs:
               echo "$identical_note"
               echo ""
             fi
+            protected_summary
 
             if [[ "${failed:-0}" -gt 0 ]]; then
               echo "**Failures:**"

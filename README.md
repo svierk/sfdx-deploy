@@ -42,7 +42,7 @@ jobs:
           alias: target-org
 
       - name: Validate Deployment
-        uses: svierk/sfdx-deploy@v1.4.2
+        uses: svierk/sfdx-deploy@v1.5.0
         with:
           source-dir: force-app
           target-org: target-org
@@ -60,7 +60,7 @@ jobs:
           persist-credentials: false
 
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@v1.4.2
+        uses: svierk/sfdx-deploy@v1.5.0
         with:
           source-dir: force-app
           target-org: target-org
@@ -73,7 +73,7 @@ The list inputs - `source-dir`, `metadata` and `tests` - accept a comma-separate
 
 ```yaml
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@v1.4.2
+        uses: svierk/sfdx-deploy@v1.5.0
         with:
           source-dir: 'force-app,my-other-app' # comma-separated
           tests: | # multi-line block
@@ -100,7 +100,7 @@ The action writes the generated manifests to `changed-sources/` and removes the 
           persist-credentials: false
 
       - name: Deploy Changed Components
-        uses: svierk/sfdx-deploy@v1.4.2
+        uses: svierk/sfdx-deploy@v1.5.0
         with:
           delta: true
           delta-from: origin/${{ github.base_ref }}
@@ -121,7 +121,7 @@ A plain Salesforce source deploy is **additive** - it never deletes a component 
           persist-credentials: false
 
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@v1.4.2
+        uses: svierk/sfdx-deploy@v1.5.0
         with:
           source-dir: force-app
           target-org: target-org
@@ -135,6 +135,29 @@ How it works:
 - The full git history is required (`fetch-depth: 0`). On a shallow clone deletions cannot be detected and the action emits a warning instead of deleting.
 - Everything runs as a **single, atomic deploy** (one test run): when deletions exist the action deploys via a generated `package.xml` plus the derived `destructiveChanges.xml`, since Salesforce requires post-destructive changes to be paired with a manifest.
 - With `dry-run: true` the deletions are validated (check-only) but not applied.
+- Files matched by the project's `.forceignore` or by `exclude` are neither deployed nor deleted.
+
+#### Keeping components from being deleted
+
+Some components should be deployed but never deleted by a pipeline, e.g. flows, whose deletion fails while a version is active. List them in `destructive-exclude`, in `.forceignore` syntax. Unlike `exclude`, the components are still deployed:
+
+```yaml
+      - name: Deploy Metadata
+        uses: svierk/sfdx-deploy@v1.5.0
+        with:
+          source-dir: force-app
+          target-org: target-org
+          destructive-exclude: |
+            **/*.flow-meta.xml
+            **/*.flowDefinition-meta.xml
+```
+
+The log and the job summary list the deletions held back this way, so that they can be done by hand where needed. Record types don't need an entry: sfdx-git-delta never puts them into the destructive changes, as the Metadata API can't delete them.
+
+| Input                 | Deployed | Deleted |
+| --------------------- | -------- | ------- |
+| `exclude`             | no       | no      |
+| `destructive-exclude` | yes      | no      |
 
 ## Inputs
 
@@ -145,6 +168,7 @@ How it works:
 | `metadata`         | no       |         | Metadata component names, comma-separated or multi-line, e.g. `ApexClass,CustomObject:Account`. |
 | `destructive-changes` | no    | `true`  | Auto-detect metadata deleted in the repo (via sfdx-git-delta) and delete it on the org **after** the deploy. Works for full and delta deployments. Needs `fetch-depth: 0`. Set `false` for additive-only. |
 | `exclude`          | no       |         | Patterns to leave out of this deployment, comma-separated or multi-line in `.forceignore` syntax. They apply on top of the project's `.forceignore`, which is restored afterwards. See [SFDX Agent Deploy](https://github.com/svierk/sfdx-agent-deploy). |
+| `destructive-exclude` | no    |         | Patterns of components that are never deleted from the org, comma-separated or multi-line in `.forceignore` syntax. Unlike `exclude`, they are still deployed. See [Keeping components from being deleted](#keeping-components-from-being-deleted). |
 | `delta`            | no       | `false` | Deploy only components changed between two git refs (via sfdx-git-delta). Needs `fetch-depth: 0`. |
 | `delta-from`       | no       |         | Git ref to compare from when detecting changes/deletions, e.g. `origin/main`. Required in delta mode; defaults to `HEAD~1` for destructive changes on full deployments. |
 | `delta-to`         | no       | `HEAD`  | Git ref to compare to when detecting changes/deletions.                                        |
@@ -171,7 +195,7 @@ How it works:
 
 The step fails if the deployment fails, while still printing the deployment result and setting the outputs.
 
-The action prints a concise, human-readable table of the affected components (created, changed and deleted) to the log and folds a detailed, human-readable breakdown of the deployment result - including component errors, test failures and code coverage warnings - into a collapsible "Deployment details" group (or "Validation details" for dry-runs). When `step-summary` is enabled, the job summary additionally lists the deployed, modified and deleted metadata - including deletions applied via destructive changes - plus a failures table when the deployment did not succeed.
+The action prints a concise, human-readable table of the affected components (created, changed and deleted) to the log and folds a detailed, human-readable breakdown of the deployment result - including component errors, test failures and code coverage warnings - into a collapsible "Deployment details" group (or "Validation details" for dry-runs). When `step-summary` is enabled, the job summary additionally lists the deployed, modified and deleted metadata - including deletions applied via destructive changes and those held back by `destructive-exclude` - plus a failures table when the deployment did not succeed.
 
 ## Which components are listed as changed
 
@@ -188,14 +212,14 @@ For all other metadata types the list shows what Salesforce reports, which prove
 
 ## Security & versioning
 
-Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-deploy@v1.4.2`. Do the same in your own pipelines:
+Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-deploy@v1.5.0`. Do the same in your own pipelines:
 
 - **Never reference a mutable ref** such as `@main` or `@v1`. It runs whatever code sits on that branch/tag at run time - with access to your org credentials - so a compromised or rewritten ref would run unnoticed.
-- **Good - pin to an exact release tag** (`@v1.4.2`). Readable, concrete, and bumped through reviewed pull requests.
+- **Good - pin to an exact release tag** (`@v1.5.0`). Readable, concrete, and bumped through reviewed pull requests.
 - **Strictest - pin to a full-length commit SHA** (`@a1b2c3d…`) with the version as a trailing comment. A SHA can never be re-pointed by the publisher; the cost is readability. Worth it for actions from publishers you don't control.
 - **Enable [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot) for `github-actions`** so those pins are bumped for you instead of silently ageing. Note that Dependabot only scans `.github/workflows` and a root `action.yml` - copy-paste snippets in a README are not covered and have to be updated by hand.
 
-This applies to **all** actions your workflows reference - this action as well as `actions/*` and any other third-party action. Latest versions at the time of writing: [`actions/checkout@v7.0.1`](https://github.com/actions/checkout/releases), [`svierk/sfdx-cli-setup@v1.1.2`](https://github.com/svierk/sfdx-cli-setup/releases), [`svierk/sfdx-login@v1.4.2`](https://github.com/svierk/sfdx-login/releases), [`svierk/sfdx-deploy@v1.4.2`](https://github.com/svierk/sfdx-deploy/releases).
+This applies to **all** actions your workflows reference - this action as well as `actions/*` and any other third-party action. Latest versions at the time of writing: [`actions/checkout@v7.0.1`](https://github.com/actions/checkout/releases), [`svierk/sfdx-cli-setup@v1.1.2`](https://github.com/svierk/sfdx-cli-setup/releases), [`svierk/sfdx-login@v1.4.2`](https://github.com/svierk/sfdx-login/releases), [`svierk/sfdx-deploy@v1.5.0`](https://github.com/svierk/sfdx-deploy/releases).
 
 Beyond pinning, a few rules are worth copying into the workflow that calls this action:
 
