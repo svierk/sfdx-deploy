@@ -33,16 +33,16 @@ jobs:
           persist-credentials: false # don't leave the GITHUB_TOKEN in .git/config for later steps
 
       - name: Install SF CLI
-        uses: svierk/sfdx-cli-setup@v1.1.2
+        uses: svierk/sfdx-cli-setup@v1.2.0
 
       - name: Salesforce Org Login
-        uses: svierk/sfdx-login@v1.4.2
+        uses: svierk/sfdx-login@v1.4.3
         with:
           sfdx-url: ${{ secrets.SFDX_AUTH_URL }}
           alias: target-org
 
       - name: Validate Deployment
-        uses: svierk/sfdx-deploy@v1.5.0
+        uses: svierk/sfdx-deploy@v1.6.0
         with:
           source-dir: force-app
           target-org: target-org
@@ -60,7 +60,7 @@ jobs:
           persist-credentials: false
 
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@v1.5.0
+        uses: svierk/sfdx-deploy@v1.6.0
         with:
           source-dir: force-app
           target-org: target-org
@@ -73,7 +73,7 @@ The list inputs - `source-dir`, `metadata` and `tests` - accept a comma-separate
 
 ```yaml
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@v1.5.0
+        uses: svierk/sfdx-deploy@v1.6.0
         with:
           source-dir: 'force-app,my-other-app' # comma-separated
           tests: | # multi-line block
@@ -100,7 +100,7 @@ The action writes the generated manifests to `changed-sources/` and removes the 
           persist-credentials: false
 
       - name: Deploy Changed Components
-        uses: svierk/sfdx-deploy@v1.5.0
+        uses: svierk/sfdx-deploy@v1.6.0
         with:
           delta: true
           delta-from: origin/${{ github.base_ref }}
@@ -121,7 +121,7 @@ A plain Salesforce source deploy is **additive** - it never deletes a component 
           persist-credentials: false
 
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@v1.5.0
+        uses: svierk/sfdx-deploy@v1.6.0
         with:
           source-dir: force-app
           target-org: target-org
@@ -143,7 +143,7 @@ Some components should be deployed but never deleted by a pipeline, e.g. flows, 
 
 ```yaml
       - name: Deploy Metadata
-        uses: svierk/sfdx-deploy@v1.5.0
+        uses: svierk/sfdx-deploy@v1.6.0
         with:
           source-dir: force-app
           target-org: target-org
@@ -159,10 +159,35 @@ The log and the job summary list the deletions held back this way, so that they 
 | `exclude`             | no       | no      |
 | `destructive-exclude` | yes      | no      |
 
+### Project in a subfolder
+
+The Salesforce CLI only deploys from inside a project, the folder holding `sfdx-project.json`. By default the action runs at the root of the workspace. If the project lives in a subfolder, set `working-directory` to it, as `working-directory` on the step itself only applies to `run` steps, not to an action:
+
+```yaml
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          path: projects/crm
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Deploy Metadata
+        uses: svierk/sfdx-deploy@v1.6.0
+        with:
+          working-directory: projects/crm
+          source-dir: force-app
+          target-org: target-org
+```
+
+- The action runs in that folder, so `source-dir`, `manifest`, the patterns in `exclude` and `destructive-exclude`, and the generated `changed-sources/` and `generated-manifest/` folders are relative to it, just like the project's `.forceignore`.
+- It works both for a repository checked out into a subfolder, as above, and for a project in a subfolder of a monorepo. In a monorepo, the delta and the deletions only cover the changes inside the project folder, and the API version comes from the project's `sfdx-project.json`.
+- Without a `sfdx-project.json` in the folder, the step fails with a hint to this input.
+
 ## Inputs
 
 | Name               | Required | Default | Description                                                                                   |
 | ------------------ | -------- | ------- | --------------------------------------------------------------------------------------------- |
+| `working-directory` | no      | `.`     | Folder of the Salesforce project (holding `sfdx-project.json`), relative to the workspace. All other paths are relative to it. See [Project in a subfolder](#project-in-a-subfolder). |
 | `source-dir`       | no       |         | Source directories to deploy, comma-separated or multi-line.                                   |
 | `manifest`         | no       |         | Path to a manifest (`package.xml`) file specifying the components to deploy.                   |
 | `metadata`         | no       |         | Metadata component names, comma-separated or multi-line, e.g. `ApexClass,CustomObject:Account`. |
@@ -212,14 +237,14 @@ For all other metadata types the list shows what Salesforce reports, which prove
 
 ## Security & versioning
 
-Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-deploy@v1.5.0`. Do the same in your own pipelines:
+Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-deploy@v1.6.0`. Do the same in your own pipelines:
 
 - **Never reference a mutable ref** such as `@main` or `@v1`. It runs whatever code sits on that branch/tag at run time - with access to your org credentials - so a compromised or rewritten ref would run unnoticed.
-- **Good - pin to an exact release tag** (`@v1.5.0`). Readable, concrete, and bumped through reviewed pull requests.
+- **Good - pin to an exact release tag** (`@v1.6.0`). Readable, concrete, and bumped through reviewed pull requests.
 - **Strictest - pin to a full-length commit SHA** (`@a1b2c3d…`) with the version as a trailing comment. A SHA can never be re-pointed by the publisher; the cost is readability. Worth it for actions from publishers you don't control.
 - **Enable [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot) for `github-actions`** so those pins are bumped for you instead of silently ageing. Note that Dependabot only scans `.github/workflows` and a root `action.yml` - copy-paste snippets in a README are not covered and have to be updated by hand.
 
-This applies to **all** actions your workflows reference - this action as well as `actions/*` and any other third-party action. Latest versions at the time of writing: [`actions/checkout@v7.0.1`](https://github.com/actions/checkout/releases), [`svierk/sfdx-cli-setup@v1.1.2`](https://github.com/svierk/sfdx-cli-setup/releases), [`svierk/sfdx-login@v1.4.2`](https://github.com/svierk/sfdx-login/releases), [`svierk/sfdx-deploy@v1.5.0`](https://github.com/svierk/sfdx-deploy/releases).
+This applies to **all** actions your workflows reference - this action as well as `actions/*` and any other third-party action. Latest versions at the time of writing: [`actions/checkout@v7.0.1`](https://github.com/actions/checkout/releases), [`svierk/sfdx-cli-setup@v1.2.0`](https://github.com/svierk/sfdx-cli-setup/releases), [`svierk/sfdx-login@v1.4.3`](https://github.com/svierk/sfdx-login/releases), [`svierk/sfdx-deploy@v1.6.0`](https://github.com/svierk/sfdx-deploy/releases).
 
 Beyond pinning, a few rules are worth copying into the workflow that calls this action:
 
