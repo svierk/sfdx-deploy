@@ -6,6 +6,13 @@ branding:
   color: blue
 
 inputs:
+  working-directory:
+    description: >
+      Folder of the Salesforce project, the one holding sfdx-project.json, relative to the workspace, e.g.
+      "projects/crm". The action runs there, so the other paths (source-dir, manifest, ...) are relative to it.
+      For a project that is checked out into a subfolder or lives in a subfolder of a monorepo.
+    required: false
+    default: .
   source-dir:
     description: Source directories to deploy, as a comma-separated or multi-line list, e.g. "force-app,my-other-app".
     required: false
@@ -104,7 +111,9 @@ runs:
     - name: Deploy Metadata
       id: deploy
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
         SOURCE_DIR: ${{ inputs.source-dir }}
         MANIFEST: ${{ inputs.manifest }}
         METADATA: ${{ inputs.metadata }}
@@ -125,6 +134,13 @@ runs:
         STEP_SUMMARY: ${{ inputs.step-summary }}
       run: |
         set -euo pipefail
+
+        # The CLI only deploys from inside a project, whatever source-dir names, and
+        # the action reads sfdx-project.json and .forceignore where it runs.
+        if [[ ! -f sfdx-project.json ]]; then
+          echo "::error::No sfdx-project.json in '${WORKING_DIRECTORY}'. Set the working-directory input to the folder of the Salesforce project."
+          exit 1
+        fi
 
         args=()
 
@@ -192,6 +208,29 @@ runs:
           fi
         }
 
+        # Prints the ignore file $1 as sfdx-git-delta needs it. In a monorepo it matches
+        # the patterns against paths from the root of the repository, so the anchored
+        # ones - with a slash before the end - get the project folder in front, in a
+        # copy. Elsewhere the file stays as it is.
+        sgd_ignore_file() {
+          if [[ -z "$git_prefix" ]]; then
+            echo "$1"
+            return 0
+          fi
+          local file
+          file="$(mktemp "$sgd_dir/ignore.XXXXXX")"
+          awk -v prefix="$git_prefix" '
+            /^[[:space:]]*(#|$)/ {print; next}
+            {
+              line = $0; negate = ""
+              if (line ~ /^!/) {negate = "!"; line = substr(line, 2)}
+              path = line; sub(/\/$/, "", path)
+              if (path ~ /\//) {sub(/^\//, "", line); line = prefix line}
+              print negate line
+            }' "$1" > "$file"
+          echo "$file"
+        }
+
         # Run sfdx-git-delta for the range $2..$3 into the folder $1. $4 is the file
         # that decides which deletions to drop, empty for the .forceignore.
         # --generate-delta is needed even though the copies of the changed source
@@ -207,9 +246,9 @@ runs:
           # sfdx-git-delta only honors an ignore file it is told about. It checks
           # deletions against --ignore-destructive-file alone, or against
           # --ignore-file when there is none.
-          [[ -f .forceignore ]] && ignore+=(--ignore-file .forceignore)
-          [[ -n "$4" ]] && ignore+=(--ignore-destructive-file "$4")
-          if ! log="$(sf sgd source delta --from "$2" --to "$3" --output-dir "$out" --generate-delta ${ignore[@]+"${ignore[@]}"} 2>&1)"; then
+          [[ -f .forceignore ]] && ignore+=(--ignore-file "$(sgd_ignore_file .forceignore)")
+          [[ -n "$4" ]] && ignore+=(--ignore-destructive-file "$(sgd_ignore_file "$4")")
+          if ! log="$(sf sgd source delta --from "$2" --to "$3" --output-dir "$out" --generate-delta ${sgd_project[@]+"${sgd_project[@]}"} ${ignore[@]+"${ignore[@]}"} 2>&1)"; then
             echo "$log"
             echo "::error::sfdx-git-delta failed to generate the delta between '$2' and '$3'."
             return 1
@@ -393,6 +432,20 @@ runs:
           fi
         }
         trap cleanup EXIT
+
+        # In a monorepo the project is a subfolder of the git repository, but
+        # sfdx-git-delta only runs at its root. So it gets the root and the project
+        # folder, and the API version of the project, as it would otherwise write the
+        # latest one into the manifests. A project at the root changes nothing.
+        sgd_project=()
+        git_prefix="$(git rev-parse --show-prefix 2>/dev/null || true)"
+        if [[ -n "$git_prefix" ]]; then
+          sgd_dir="$(mktemp -d)"
+          temp_paths+=("$sgd_dir")
+          sgd_project+=(--repo-dir "$(git rev-parse --show-toplevel)" --source-dir "$git_prefix")
+          source_api="$(jq -r '.sourceApiVersion // empty' sfdx-project.json)"
+          [[ -n "$source_api" ]] && sgd_project+=(--api-version "$source_api")
+        fi
 
         # Applies the exclude input through a temporary .forceignore, for both the CLI
         # and sfdx-git-delta.
